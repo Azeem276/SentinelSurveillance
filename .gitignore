@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local data & media (never commit footage or biometric data)
+storage/
+models/*.pt
+models/*.onnx
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+data/familiar_faces/*
+!data/familiar_faces/.gitkeep
+
+# Local dev database cluster
+.devdb/
+logfile
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

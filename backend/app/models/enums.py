@@ -1,0 +1,121 @@
+"""Domain enumerations.
+
+These are persisted as VARCHAR with CHECK constraints (``native_enum=False``)
+so the hand-applied SQL schema stays portable and easy to read.
+"""
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class SourceType(StrEnum):
+    FILE = "FILE"
+    RTSP = "RTSP"
+    WEBCAM = "WEBCAM"
+
+
+class SourceStatus(StrEnum):
+    IDLE = "IDLE"
+    STARTING = "STARTING"
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    ENDED = "ENDED"
+    ERROR = "ERROR"
+
+
+class RecordingStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    INTERRUPTED = "INTERRUPTED"
+    FAILED = "FAILED"
+
+
+class TrackStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
+
+
+class IdentityCategory(StrEnum):
+    PERMANENT = "PERMANENT"
+    TEMPORARY = "TEMPORARY"
+
+
+class IdentityStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    EXPIRED = "EXPIRED"
+    DELETED = "DELETED"
+
+
+class RecognitionState(StrEnum):
+    """Mutually exclusive states of the recognition pipeline for a track.
+
+    ``NO_FACE`` / ``FACE_UNRECOGNIZABLE`` are *not* the same as ``UNFAMILIAR``:
+    only UNFAMILIAR means "a usable face was compared and matched nothing".
+    """
+
+    NO_FACE = "NO_FACE"
+    UNKNOWN_PENDING_RECOGNITION = "UNKNOWN_PENDING_RECOGNITION"
+    FACE_UNRECOGNIZABLE = "FACE_UNRECOGNIZABLE"
+    UNFAMILIAR = "UNFAMILIAR"
+    TEMPORARY_FAMILIAR = "TEMPORARY_FAMILIAR"
+    PERMANENT_FAMILIAR = "PERMANENT_FAMILIAR"
+
+
+class ProximityZone(StrEnum):
+    FAR = "FAR"            # outside Proximity A
+    ZONE_A = "ZONE_A"      # inside recognition zone, outside alarm zone
+    ZONE_B = "ZONE_B"      # inside alarm zone
+    UNKNOWN = "UNKNOWN"
+
+
+class EventType(StrEnum):
+    OBJECT_DETECTED = "OBJECT_DETECTED"
+    OBJECT_TRACK_STARTED = "OBJECT_TRACK_STARTED"
+    OBJECT_TRACK_ENDED = "OBJECT_TRACK_ENDED"
+    MOTION_STARTED = "MOTION_STARTED"
+    MOTION_ENDED = "MOTION_ENDED"
+    MOVEMENT_EVENT = "MOVEMENT_EVENT"
+    UNIDENTIFIED_MOVEMENT = "UNIDENTIFIED_MOVEMENT"
+    FACE_DETECTED = "FACE_DETECTED"
+    FACE_UNRECOGNIZABLE = "FACE_UNRECOGNIZABLE"
+    FACE_RECOGNIZED = "FACE_RECOGNIZED"
+    UNKNOWN_FACE = "UNKNOWN_FACE"
+    PROXIMITY_A_ENTERED = "PROXIMITY_A_ENTERED"
+    PROXIMITY_A_EXITED = "PROXIMITY_A_EXITED"
+    PROXIMITY_B_ENTERED = "PROXIMITY_B_ENTERED"
+    PROXIMITY_B_EXITED = "PROXIMITY_B_EXITED"
+    TEMPORARY_FAMILIAR_DETECTED = "TEMPORARY_FAMILIAR_DETECTED"
+    PERMANENT_FAMILIAR_DETECTED = "PERMANENT_FAMILIAR_DETECTED"
+    ALARM_STARTED = "ALARM_STARTED"
+    ALARM_STOPPED = "ALARM_STOPPED"
+    IDENTITY_CLASSIFIED = "IDENTITY_CLASSIFIED"
+    IDENTITY_EXPIRED = "IDENTITY_EXPIRED"
+    RECORDING_STARTED = "RECORDING_STARTED"
+    RECORDING_STOPPED = "RECORDING_STOPPED"
+    RECORDING_INTERRUPTED = "RECORDING_INTERRUPTED"
+    SOURCE_AVAILABLE = "SOURCE_AVAILABLE"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+
+
+class EventSeverity(StrEnum):
+    INFO = "INFO"
+    NOTICE = "NOTICE"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+class AlertType(StrEnum):
+    BEEP = "BEEP"
+    CONTINUOUS_ALARM = "CONTINUOUS_ALARM"
+
+
+class AlertState(StrEnum):
+    ACTIVE = "ACTIVE"
+    STOPPED = "STOPPED"
+    AUTO_CLEARED = "AUTO_CLEARED"
+
+
+class FaceReviewStatus(StrEnum):
+    PENDING = "PENDING"
+    CLASSIFIED = "CLASSIFIED"
+    DISMISSED = "DISMISSED"
