@@ -1,0 +1,83 @@
+# Sentinel - full local stack.
+#
+#   cp .env.example .env      # set POSTGRES_PASSWORD + DATABASE_URL
+#   docker compose up -d
+#
+# The dashboard is then on http://localhost:8080
+#
+# For GPU inference add the overlay:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# For local GPU *development* it is usually simpler to run only the database
+# in Docker and the backend natively:
+#   docker compose up -d postgres
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Applied automatically the first time the data volume is created.
+      - ./backend/migrations/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: sentinel-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinel}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOG_JSON: ${LOG_JSON:-true}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      AI_DEVICE: ${AI_DEVICE:-auto}
+      AUTO_DOWNLOAD_MODELS: ${AUTO_DOWNLOAD_MODELS:-true}
+      # Container-internal absolute paths.
+      STORAGE_PATH: /app/storage
+      RECORDING_PATH: /app/storage/recordings
+      FACE_STORAGE_PATH: /app/storage/faces
+      SNAPSHOT_PATH: /app/storage/snapshots
+      EVENT_ASSET_PATH: /app/storage/events
+      VIDEO_STORAGE_PATH: /app/data/sample_videos
+      FACE_DATASET_PATH: /app/data/familiar_faces
+      MODEL_PATH: /app/models
+      # nginx fronts the UI, so requests arrive same-origin.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    volumes:
+      - ./storage:/app/storage
+      - ./models:/app/models
+      - ./data:/app/data
+    ports:
+      # Bound to localhost: the frontend proxies to it internally.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: sentinel-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  postgres_data:

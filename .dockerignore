@@ -1,0 +1,14 @@
+.venv/
+.devdb/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.env
+node_modules/
+frontend/dist/
+storage/
+models/*.pt
+models/*.onnx
+data/sample_videos/*.mp4
+*.log
