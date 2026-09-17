@@ -250,6 +250,37 @@ CREATE INDEX IF NOT EXISTS ix_face_embeddings_identity_id ON face_embeddings (id
 CREATE INDEX IF NOT EXISTS ix_face_embeddings_model_name ON face_embeddings (model_name);
 
 -- ------------------------------------------------------------------
+-- Table: face_profile_samples
+--
+-- The multi-angle face gallery collected for one person while they were in
+-- the recognition zone, parked against the faces row awaiting review. Rows
+-- are enrolled into an identity on classification and deleted on dismissal;
+-- they never take part in recognition themselves.
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS face_profile_samples (
+	id BIGSERIAL NOT NULL, 
+	face_id BIGINT NOT NULL, 
+	source_id INTEGER NOT NULL, 
+	track_id BIGINT, 
+	vector BYTEA NOT NULL, 
+	dim INTEGER NOT NULL, 
+	model_name VARCHAR(64) NOT NULL, 
+	quality_score FLOAT NOT NULL, 
+	yaw FLOAT NOT NULL, 
+	brightness FLOAT NOT NULL, 
+	face_pixels INTEGER, 
+	image_path VARCHAR(512), 
+	frame_number INTEGER NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_face_profile_samples PRIMARY KEY (id), 
+	CONSTRAINT fk_face_profile_samples_face_id_faces FOREIGN KEY(face_id) REFERENCES faces (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_face_profile_samples_source_id_video_sources FOREIGN KEY(source_id) REFERENCES video_sources (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_face_profile_samples_track_id_tracks FOREIGN KEY(track_id) REFERENCES tracks (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS ix_face_profile_samples_face_id ON face_profile_samples (face_id);
+CREATE INDEX IF NOT EXISTS ix_face_profile_samples_track_id ON face_profile_samples (track_id);
+
+-- ------------------------------------------------------------------
 -- Table: detections
 -- ------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS detections (

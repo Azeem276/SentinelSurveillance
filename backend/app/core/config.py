@@ -89,14 +89,52 @@ class Settings(BaseSettings):
     motion_end_frames: int = 25
 
     # ----------------------------------------------------------------- face
-    face_recognition_threshold: float = 0.55
-    face_min_pixels: int = 48
+    # SFace's own reference operating point is ~0.363 cosine. Anything much
+    # above that rejects genuine same-person pairs seen at a different angle.
+    face_recognition_threshold: float = 0.40
+    face_min_pixels: int = 40
     face_min_blur: float = 18.0
     face_min_brightness: float = 35.0
     face_max_brightness: float = 225.0
     face_min_confidence: float = 0.7
     face_max_yaw_ratio: float = 0.38
     face_votes_to_switch_identity: int = 3
+    # A steeply angled face is graded, not binned: it is still embedded and
+    # still contributes to the track profile, but has to clear a higher bar.
+    face_pose_soft_gate: bool = True
+    face_pose_threshold_penalty: float = 0.06
+    # Detect faces once per frame and assign them to people, instead of
+    # running a detector inside every person box (crowd-safe and cheaper).
+    face_detect_whole_frame: bool = True
+    face_max_faces_per_frame: int = 24
+    # How much of a face box must fall inside a person box to be theirs.
+    face_min_containment: float = 0.55
+
+    # ------------------------------------------------------- face profiling
+    # A track is identified from MANY views of the face, not from one frame.
+    face_profile_max_samples: int = 100
+    face_profile_min_samples: int = 8
+    face_profile_per_bucket: int = 8
+    face_profile_gallery_size: int = 12
+    # Fraction of a profile's samples that must agree before a verdict stands.
+    face_profile_support_ratio: float = 0.55
+    # Best identity must beat the runner-up by this cosine margin.
+    face_match_margin: float = 0.05
+    # Re-run the profile verdict once this many new samples have arrived.
+    face_profile_reverdict_every: int = 3
+
+    # ------------------------------------------------- unknown confirmation
+    # An unknown person is not alarmed on immediately: evidence is gathered
+    # for this long, and only a repeatedly-unknown verdict raises anything.
+    unknown_confirm_seconds: float = 12.0
+    unknown_confirm_min_verdicts: int = 3
+    # First confirmation sounds a timed alarm; repeats escalate to continuous.
+    alarm_duration_seconds: int = 30
+    alarm_escalate_after_cycles: int = 3
+    # Quiet gap after a timed alarm before the same track can re-trigger,
+    # so a lingering unknown produces a paced sequence rather than a siren
+    # that merely restarts itself every 30 seconds.
+    alarm_rearm_seconds: int = 20
 
     # ------------------------------------------------------------ proximity
     default_proximity_a: float = 10.0
@@ -112,6 +150,10 @@ class Settings(BaseSettings):
     alarm_unrecognizable_policy: Literal["ignore", "alarm"] = "ignore"
     temporary_familiar_alert: Literal["none", "beep", "continuous"] = "beep"
     alert_repeat_seconds: int = 30
+    # Startup default for the audible-alarm switch. The operator's choice is
+    # persisted in system_settings and wins after the first toggle; alerts,
+    # events and the visual alarm state are unaffected either way.
+    alarm_sound_enabled: bool = True
 
     # ------------------------------------------------------------ recording
     recording_fps: float = 15.0

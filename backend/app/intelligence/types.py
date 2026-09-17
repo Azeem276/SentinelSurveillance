@@ -130,6 +130,11 @@ class FaceQuality:
     blur: float
     brightness: float
     detection_confidence: float
+    # Signed head yaw in [-1, 1]: negative is turned one way, positive the
+    # other, 0 is frontal. Used to spread a track's face profile across poses.
+    yaw: float = 0.0
+    # Extra cosine similarity this crop must clear because of its pose.
+    threshold_penalty: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +145,8 @@ class FaceQuality:
             "blur": round(self.blur, 2),
             "brightness": round(self.brightness, 2),
             "detection_confidence": round(self.detection_confidence, 4),
+            "yaw": round(self.yaw, 4),
+            "threshold_penalty": round(self.threshold_penalty, 4),
         }
 
 

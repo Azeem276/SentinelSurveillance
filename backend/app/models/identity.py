@@ -160,6 +160,47 @@ class FaceEmbedding(Base):
     )
 
 
+class FaceProfileSample(Base):
+    """One view from a track's face profile, held until it is reviewed.
+
+    While a person is in the recognition zone the pipeline collects many
+    observations of their face across different angles and lighting. The best
+    of those are parked here, attached to the ``Face`` row that represents the
+    person in the review queue. When an operator classifies that face, every
+    sample is enrolled at once - so a new identity is born with a multi-angle
+    gallery instead of the single arbitrary crop that happened to be saved.
+
+    These rows are disposable: they are deleted once the face is classified or
+    dismissed, and they never take part in recognition themselves.
+    """
+
+    __tablename__ = "face_profile_samples"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True)
+    face_id: Mapped[int] = mapped_column(
+        ForeignKey("faces.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("video_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
+    vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    yaw: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    brightness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    face_pixels: Mapped[int | None] = mapped_column(Integer)
+    image_path: Mapped[str | None] = mapped_column(String(512))
+    frame_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_face_profile_samples_face_id", "face_id"),
+        Index("ix_face_profile_samples_track_id", "track_id"),
+    )
+
+
 class TemporaryIdentityExpiration(Base):
     """Audit trail of scheduled and performed temporary-identity expirations."""
 

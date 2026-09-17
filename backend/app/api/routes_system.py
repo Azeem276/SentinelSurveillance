@@ -6,7 +6,9 @@ import platform
 import time
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
+from app.alerts.engine import get_alert_engine
 from app.api.deps import DbSession, Manager
 from app.core.config import get_settings
 from app.core.hardware import get_hardware
@@ -21,6 +23,12 @@ from app.schemas.intelligence import DiagnosticsResponse, ModelInfo
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 _STARTED_AT = time.time()
+
+
+class AlarmSoundRequest(BaseModel):
+    """Audio-only switch: alarms keep firing, they just stay silent."""
+
+    enabled: bool
 
 
 @router.get("/health")
@@ -56,6 +64,10 @@ def runtime_config():
         "recording_enabled": s.recording_enabled,
         "temporary_familiar_alert": s.temporary_familiar_alert,
         "alarm_unrecognizable_policy": s.alarm_unrecognizable_policy,
+        "alarm_sound_enabled": get_alert_engine().sound_enabled,
+        "alarm_duration_seconds": s.alarm_duration_seconds,
+        "unknown_confirm_seconds": s.unknown_confirm_seconds,
+        "face_profile_max_samples": s.face_profile_max_samples,
         "environment": s.environment,
     }
 
@@ -131,6 +143,26 @@ def diagnostics(session: DbSession, manager: Manager):
         process=process,
         websocket_subscribers=get_bus().subscriber_count,
     )
+
+
+@router.get("/alarm-sound", response_model=OperationResult)
+def get_alarm_sound():
+    """Whether audible alarms are currently allowed to play."""
+    return OperationResult(data={"enabled": get_alert_engine().sound_enabled})
+
+
+@router.put("/alarm-sound", response_model=OperationResult)
+def set_alarm_sound(payload: AlarmSoundRequest, session: DbSession):
+    """Turn the siren and beeps on or off, leaving everything else running.
+
+    Surveillance, recording, detection, recognition and the alert records
+    themselves are untouched - alarms still fire, are logged, and light up the
+    console; they just do not make noise. The choice is persisted, so it holds
+    across restarts until somebody changes it back.
+    """
+    enabled = get_alert_engine().set_sound_enabled(payload.enabled, session=session)
+    session.commit()
+    return OperationResult(data={"enabled": enabled})
 
 
 @router.get("/settings")

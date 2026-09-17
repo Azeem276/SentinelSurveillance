@@ -6,25 +6,38 @@ rules testable and auditable.
 
     PERMANENT_FAMILIAR                      -> never alarms
     TEMPORARY_FAMILIAR  + crossed B         -> configured temporary policy
-    UNFAMILIAR          + crossed B         -> continuous alarm
+    UNFAMILIAR (confirmed) + crossed B      -> timed alarm, then escalation
+    UNFAMILIAR (unconfirmed)                -> never alarms
     FACE_UNRECOGNIZABLE + crossed B         -> no alarm by default (policy)
     UNKNOWN_PENDING_RECOGNITION             -> never alarms
 
-The FACE_UNRECOGNIZABLE case is the important one: recognition *failing* is
-not evidence of an intruder. Sites that want the stricter behaviour set
+Two cases carry the weight here.
+
+``FACE_UNRECOGNIZABLE`` means recognition *failed*, which is not evidence of an
+intruder. Sites that want the stricter behaviour set
 ``unrecognizable_policy="alarm"``.
+
+``UNFAMILIAR`` is now graded by how much evidence stands behind it. An unknown
+person who has only just been judged unknown gets nothing; one whose face
+profile has said "nobody" repeatedly over the confirmation window gets a timed
+alarm that stops itself; one who keeps coming back is escalated to a
+continuous alarm that an operator has to clear. That ladder exists because the
+old behaviour - one bad frame, immediate never-ending siren - punished the
+operator for the recogniser's worst moment rather than its considered view.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.core.config import get_settings
 from app.models.enums import AlertType, RecognitionState
 
 
 class SecurityAction(StrEnum):
     NONE = "NONE"
     BEEP = "BEEP"
+    START_TIMED_ALARM = "START_TIMED_ALARM"
     START_CONTINUOUS_ALARM = "START_CONTINUOUS_ALARM"
     STOP_ALARM = "STOP_ALARM"
 
@@ -69,11 +82,14 @@ class SecurityDecision:
     alert_type: AlertType | None
     reason: str
     severity: str = "INFO"
+    # For START_TIMED_ALARM: how long the siren runs before clearing itself.
+    duration_seconds: int | None = None
 
     @property
     def raises_alert(self) -> bool:
         return self.action in (
             SecurityAction.BEEP,
+            SecurityAction.START_TIMED_ALARM,
             SecurityAction.START_CONTINUOUS_ALARM,
         )
 
@@ -86,12 +102,29 @@ def evaluate_proximity_b(
     recognition_state: RecognitionState,
     policy: AlertPolicy,
     already_alarming: bool = False,
+    unknown_confirmed: bool = True,
+    alarm_cycles: int = 0,
+    alarm_duration_seconds: int | None = None,
+    escalate_after_cycles: int | None = None,
 ) -> SecurityDecision:
     """Decide what happens when a tracked person is inside the alarm zone.
 
     ``already_alarming`` makes the function idempotent: a track that is
     already alarming must not raise a second alarm on the next frame.
+
+    ``unknown_confirmed`` says whether the UNFAMILIAR verdict is backed by the
+    full evidence window. An unconfirmed unknown is treated as inconclusive -
+    the person is being assessed, not accused.
+
+    ``alarm_cycles`` counts how many timed alarms this track has already run
+    through. Past ``escalate_after_cycles`` the system stops giving the benefit
+    of the doubt and raises a continuous alarm instead.
     """
+    settings = get_settings()
+    if alarm_duration_seconds is None:
+        alarm_duration_seconds = settings.alarm_duration_seconds
+    if escalate_after_cycles is None:
+        escalate_after_cycles = settings.alarm_escalate_after_cycles
     if recognition_state is RecognitionState.PERMANENT_FAMILIAR:
         return SecurityDecision(
             SecurityAction.NONE, None, "permanent_familiar_no_alarm", "INFO"
@@ -120,11 +153,24 @@ def evaluate_proximity_b(
     if recognition_state is RecognitionState.UNFAMILIAR:
         if already_alarming:
             return NO_ACTION
+        if not unknown_confirmed:
+            # Judged unknown, but not yet for long enough to act on.
+            return SecurityDecision(
+                SecurityAction.NONE, None, "unfamiliar_pending_confirmation", "NOTICE"
+            )
+        if alarm_cycles >= max(1, escalate_after_cycles):
+            return SecurityDecision(
+                SecurityAction.START_CONTINUOUS_ALARM,
+                AlertType.CONTINUOUS_ALARM,
+                "unfamiliar_person_repeatedly_in_alarm_zone",
+                "CRITICAL",
+            )
         return SecurityDecision(
-            SecurityAction.START_CONTINUOUS_ALARM,
+            SecurityAction.START_TIMED_ALARM,
             AlertType.CONTINUOUS_ALARM,
             "unfamiliar_person_in_alarm_zone",
             "CRITICAL",
+            duration_seconds=alarm_duration_seconds,
         )
 
     if recognition_state is RecognitionState.FACE_UNRECOGNIZABLE:

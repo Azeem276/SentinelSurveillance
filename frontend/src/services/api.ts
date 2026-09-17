@@ -1,7 +1,7 @@
 // Typed REST client. Every network call in the app goes through here.
 import type {
-  Alert, Diagnostics, Identity, IdentityCategory, ModelInfo, Recording,
-  SecurityEvent, SourceAnalysis, SystemState, UnfamiliarFace, VideoSource,
+  Alert, Diagnostics, Identity, IdentityCategory, MergeCandidate, ModelInfo,
+  Recording, SecurityEvent, SourceAnalysis, SystemState, UnfamiliarFace, VideoSource,
 } from '@/types'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -63,6 +63,8 @@ const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
 const patch = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
+const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export interface OperationResult {
@@ -77,6 +79,9 @@ export const api = {
   diagnostics: () => get<Diagnostics>('/api/system/diagnostics'),
   models: () => get<ModelInfo[]>('/api/system/models'),
   runtimeConfig: () => get<Record<string, unknown>>('/api/system/config'),
+  alarmSound: () => get<OperationResult>('/api/system/alarm-sound'),
+  setAlarmSound: (enabled: boolean) =>
+    put<OperationResult>('/api/system/alarm-sound', { enabled }),
 
   // ---------------------------------------------------- surveillance
   startSurveillance: () => post<OperationResult>('/api/surveillance/start'),
@@ -118,6 +123,10 @@ export const api = {
   updateIdentity: (id: number, body: Record<string, unknown>) =>
     patch<Identity>(`/api/identities/${id}`, body),
   deleteIdentity: (id: number) => del<OperationResult>(`/api/identities/${id}`),
+  mergeIdentities: (id: number, intoIdentityId: number) =>
+    post<OperationResult>(`/api/identities/${id}/merge`, {
+      into_identity_id: intoIdentityId,
+    }),
   enrolDataset: () => post<OperationResult>('/api/identities/enrol-dataset'),
   syncIndex: () => post<OperationResult>('/api/identities/sync-index'),
   expireNow: () => post<OperationResult>('/api/identities/expire-now'),
@@ -132,6 +141,12 @@ export const api = {
     post<Record<string, unknown>>(`/api/faces/${faceId}/classify`, body),
   bulkClassify: (body: Record<string, unknown>) =>
     post<Record<string, unknown>[]>('/api/faces/classify-bulk', body),
+  mergeFace: (faceId: number, identityId: number) =>
+    post<Record<string, unknown>>(`/api/faces/${faceId}/merge`, {
+      identity_id: identityId,
+    }),
+  mergeCandidates: (faceId: number) =>
+    get<MergeCandidate[]>(`/api/faces/${faceId}/merge-candidates`),
   dismissFace: (faceId: number) => post<OperationResult>(`/api/faces/${faceId}/dismiss`),
   faceImageUrl: (path: string) => `${BASE}/api/faces/image/${path}`,
 

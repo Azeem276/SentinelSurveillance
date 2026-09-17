@@ -42,6 +42,8 @@ interface SentinelState {
   activeAlerts: Alert[]
   pendingReview: number
   reviewGateDismissed: boolean
+  /** Backend-owned: alarms still fire when false, they just stay silent. */
+  alarmSound: boolean
 
   // review / identities
   unfamiliarFaces: UnfamiliarFace[]
@@ -63,6 +65,8 @@ interface SentinelState {
   refreshAll: () => Promise<void>
   stopAlert: (id: number) => Promise<void>
   stopAllAlerts: () => Promise<void>
+  setAlarmSound: (enabled: boolean) => Promise<void>
+  refreshAlarmSound: () => Promise<void>
   dismissReviewGate: () => void
   toast: (kind: 'info' | 'warn' | 'error' | 'ok', text: string) => void
   dismissToast: (id: number) => void
@@ -83,6 +87,7 @@ export const useSentinelStore = create<SentinelState>((set, get) => ({
   activeAlerts: [],
   pendingReview: 0,
   reviewGateDismissed: false,
+  alarmSound: true,
   unfamiliarFaces: [],
   identities: [],
   toasts: [],
@@ -104,6 +109,11 @@ export const useSentinelStore = create<SentinelState>((set, get) => ({
     switch (msg.type) {
       case 'snapshot': {
         const snap = msg as Extract<WsMessage, { type: 'snapshot' }>
+        const sound = (snap as unknown as { alarm_sound?: boolean }).alarm_sound
+        if (sound !== undefined) {
+          set({ alarmSound: sound })
+          alertAudio.setMuted(!sound)
+        }
         set({ system: snap.system, pendingReview: snap.pending_review })
         const ids = (snap.active_alerts as { id: number; alert_type?: string }[])
           .filter((a) => a.alert_type === 'CONTINUOUS_ALARM')
@@ -150,6 +160,12 @@ export const useSentinelStore = create<SentinelState>((set, get) => ({
         const alert = (msg as unknown as { alert: { id: number } }).alert
         alertAudio.stopAlarm(alert.id)
         void get().refreshAlerts()
+        break
+      }
+      case 'alarm_sound': {
+        const m = msg as unknown as { enabled: boolean }
+        set({ alarmSound: m.enabled })
+        alertAudio.setMuted(!m.enabled)
         break
       }
       case 'alarms_cleared': {
@@ -238,6 +254,7 @@ export const useSentinelStore = create<SentinelState>((set, get) => ({
       get().refreshAlerts(),
       get().refreshReview(),
       get().refreshIdentities(),
+      get().refreshAlarmSound(),
     ])
     const { sources, selectedSourceId } = get()
     if (selectedSourceId === null && sources.length > 0) {
@@ -256,6 +273,32 @@ export const useSentinelStore = create<SentinelState>((set, get) => ({
     alertAudio.stopAll()
     await get().refreshAlerts()
     get().toast('ok', 'All alarms stopped')
+  },
+
+  // The mute switch lives on the backend so every open console agrees, and so
+  // the choice survives a reload. Detection, recording and the alarm state
+  // machine are untouched - this only decides whether anything is audible.
+  setAlarmSound: async (enabled) => {
+    set({ alarmSound: enabled })
+    alertAudio.setMuted(!enabled)
+    try {
+      await api.setAlarmSound(enabled)
+      get().toast('ok', enabled ? 'Alarm sound on' : 'Alarm sound muted')
+    } catch (e) {
+      set({ alarmSound: !enabled })
+      alertAudio.setMuted(enabled)
+      get().toast('error', (e as Error).message)
+    }
+  },
+  refreshAlarmSound: async () => {
+    try {
+      const result = await api.alarmSound()
+      const enabled = Boolean((result.data as { enabled?: boolean }).enabled)
+      set({ alarmSound: enabled })
+      alertAudio.setMuted(!enabled)
+    } catch {
+      /* non-fatal: keep the last known state */
+    }
   },
 }))
 

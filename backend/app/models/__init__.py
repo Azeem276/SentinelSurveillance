@@ -8,7 +8,7 @@ from app.models.enums import (
 )
 from app.models.event import Alert, SecurityEvent, SystemSetting
 from app.models.identity import (
-    Face, FaceEmbedding, Identity, TemporaryIdentityExpiration,
+    Face, FaceEmbedding, FaceProfileSample, Identity, TemporaryIdentityExpiration,
 )
 from app.models.recording import RecordingSession
 from app.models.source import VideoSource
@@ -16,7 +16,8 @@ from app.models.source import VideoSource
 __all__ = [
     "Base", "TimestampMixin", "utcnow",
     "VideoSource", "RecordingSession", "Track", "Detection", "MotionEvent",
-    "Identity", "Face", "FaceEmbedding", "TemporaryIdentityExpiration",
+    "Identity", "Face", "FaceEmbedding", "FaceProfileSample",
+    "TemporaryIdentityExpiration",
     "SecurityEvent", "Alert", "SystemSetting",
     "SourceType", "SourceStatus", "RecordingStatus", "TrackStatus",
     "IdentityCategory", "IdentityStatus", "RecognitionState", "ProximityZone",

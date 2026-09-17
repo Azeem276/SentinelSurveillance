@@ -18,8 +18,11 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Local data & media (never commit footage or biometric data)
-storage/
+# Local data & media (never commit footage or biometric data).
+# Anchored with a leading slash: a bare 'storage/' also matched
+# backend/app/storage/, which silently kept a required source module out
+# of the repository.
+/storage/
 models/*.pt
 models/*.onnx
 data/sample_videos/*

@@ -8,13 +8,15 @@ from app.core.exceptions import NotFoundError, StorageError
 from app.models.enums import FaceReviewStatus, IdentityCategory, IdentityStatus
 from app.repositories.detection_repository import TrackRepository
 from app.repositories.identity_repository import (
-    FaceEmbeddingRepository, FaceRepository, IdentityRepository, generate_identifier,
+    FaceEmbeddingRepository, FaceProfileSampleRepository, FaceRepository,
+    IdentityRepository, generate_identifier,
 )
 from app.repositories.source_repository import SourceRepository
 from app.schemas.common import OperationResult
 from app.schemas.intelligence import (
-    BulkClassifyRequest, ClassificationResponse, FaceClassifyRequest, IdentityCreate,
-    IdentityDetail, IdentityRead, IdentityUpdate, TrackRead, UnfamiliarFace,
+    BulkClassifyRequest, ClassificationResponse, FaceClassifyRequest, FaceMergeRequest,
+    IdentityCreate, IdentityDetail, IdentityMergeRequest, IdentityRead, IdentityUpdate,
+    MergeCandidate, TrackRead, UnfamiliarFace,
 )
 from app.services.identity_service import IdentityService
 from app.storage.paths import face_root, resolve_face
@@ -100,6 +102,21 @@ def delete_identity(identity_id: int, session: DbSession, hard: bool = False):
     return OperationResult(data=result)
 
 
+@router.post("/identities/{identity_id}/merge", response_model=OperationResult)
+def merge_identity(identity_id: int, payload: IdentityMergeRequest, session: DbSession):
+    """Fold this identity into another one, which survives.
+
+    For when the same person has ended up with two entries. Embeddings, face
+    crops and historical tracks all move to the target, whose merged gallery
+    covers more angles than either did alone.
+    """
+    result = IdentityService(session).merge_identities(
+        identity_id, payload.into_identity_id
+    )
+    session.commit()
+    return OperationResult(data=result)
+
+
 @router.get("/identities/{identity_id}/tracks", response_model=list[TrackRead])
 def identity_tracks(identity_id: int, session: DbSession, limit: int = Query(100, le=500)):
     return TrackRepository(session).list_for_identity(identity_id, limit=limit)
@@ -141,6 +158,7 @@ def list_unfamiliar_faces(
         offset=page.offset,
     )
     source_repo = SourceRepository(session)
+    samples_repo = FaceProfileSampleRepository(session)
     cache: dict[int, tuple[str, str]] = {}
     out: list[UnfamiliarFace] = []
     for face in faces:
@@ -155,6 +173,7 @@ def list_unfamiliar_faces(
         item.source_name = name
         item.image_url = f"/api/faces/image/{face.image_path}" if face.image_path else None
         item.suggested_identifier = generate_identifier(face.detected_at)
+        item.profile_samples = samples_repo.count_for_face(face.id)
         out.append(item)
     return out
 
@@ -195,14 +214,55 @@ def bulk_classify(payload: BulkClassifyRequest, session: DbSession):
     return [ClassificationResponse(**r.__dict__) for r in results]
 
 
+@router.post("/faces/{face_id}/merge", response_model=ClassificationResponse)
+def merge_face(face_id: int, payload: FaceMergeRequest, session: DbSession):
+    """Attach this face to an identity that already exists.
+
+    Use when a person the system has enrolled was detected as somebody new -
+    usually because the camera saw them from an angle their gallery did not
+    cover. The face and every profile sample behind it are added to the chosen
+    identity, which both corrects the record and makes that angle recognisable
+    next time. The identity keeps its own category and retention.
+    """
+    result = IdentityService(session).merge_face_into_identity(
+        face_id, payload.identity_id
+    )
+    session.commit()
+    return ClassificationResponse(**result.__dict__)
+
+
+@router.get("/faces/{face_id}/merge-candidates", response_model=list[MergeCandidate])
+def face_merge_candidates(face_id: int, session: DbSession, limit: int = Query(8, le=25)):
+    """Identities this face plausibly already belongs to, best first.
+
+    Ranked below the live recognition threshold on purpose: this is a prompt
+    for a human decision, not an automatic match.
+    """
+    rows = IdentityService(session).merge_candidates(face_id, limit=limit)
+    out: list[MergeCandidate] = []
+    for row in rows:
+        candidate = MergeCandidate(**row)
+        candidate.thumbnail_url = (
+            f"/api/faces/image/{row['thumbnail_path']}" if row.get("thumbnail_path") else None
+        )
+        out.append(candidate)
+    return out
+
+
 @router.post("/faces/{face_id}/dismiss", response_model=OperationResult)
 def dismiss_face(face_id: int, session: DbSession):
     repo = FaceRepository(session)
     if repo.get(face_id) is None:
         raise NotFoundError(f"face {face_id} not found")
     repo.dismiss(face_id)
+    # The collected gallery only existed to support this review; keeping
+    # biometric samples for somebody an operator waved through would be
+    # retaining data we have just been told we do not need.
+    dropped = FaceProfileSampleRepository(session).delete_for_face(face_id)
     session.commit()
-    return OperationResult(data={"face_id": face_id, "dismissed": True})
+    return OperationResult(
+        data={"face_id": face_id, "dismissed": True, "samples_discarded": dropped}
+    )
 
 
 @router.get("/faces/image/{path:path}")

@@ -116,6 +116,153 @@ function EditDialog({
   )
 }
 
+/** Fold one identity into another when the same person has two records. */
+function MergeIdentitiesDialog({
+  identity,
+  onClose,
+  onDone,
+}: {
+  identity: Identity
+  onClose: () => void
+  onDone: () => void
+}) {
+  const toast = useSentinelStore((s) => s.toast)
+  const identities = useSentinelStore((s) => s.identities)
+  const [target, setTarget] = useState<number | null>(null)
+  const [filter, setFilter] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const options = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    return identities
+      .filter((i) => i.status === 'ACTIVE' && i.id !== identity.id)
+      .filter(
+        (i) =>
+          !needle ||
+          (i.display_name ?? '').toLowerCase().includes(needle) ||
+          i.generated_identifier.toLowerCase().includes(needle),
+      )
+  }, [identities, identity.id, filter])
+
+  const chosen = options.find((i) => i.id === target) ?? null
+
+  const submit = async () => {
+    if (target === null) return
+    setSaving(true)
+    try {
+      const result = await api.mergeIdentities(identity.id, target)
+      const moved = (result.data as { embeddings_moved?: number }).embeddings_moved ?? 0
+      toast('ok', `Merged — ${moved} embedding(s) moved`)
+      onDone()
+      onClose()
+    } catch (e) {
+      toast('error', (e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Merge identities"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn primary"
+            onClick={submit}
+            disabled={saving || target === null}
+          >
+            {saving ? 'Merging…' : 'Merge'}
+          </button>
+        </>
+      }
+    >
+      <p style={{ fontSize: 12.5, marginTop: 0 }}>
+        Move everything from{' '}
+        <strong>{identity.display_name ?? identity.generated_identifier}</strong>{' '}
+        ({identity.embedding_count} embeddings) into another identity, which
+        survives.
+      </p>
+      <div className="hint" style={{ marginBottom: 12 }}>
+        Embeddings, stored face crops and historical tracks all move across.
+        The merged gallery covers more angles than either record did alone,
+        which is the point. This cannot be undone automatically.
+      </div>
+
+      <div className="field">
+        <label htmlFor="merge-target">Merge into</label>
+        <input
+          id="merge-target"
+          className="input"
+          placeholder="Search identities…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      </div>
+
+      <div
+        style={{
+          maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)',
+          borderRadius: 6,
+        }}
+      >
+        {options.length === 0 && (
+          <div className="empty" style={{ padding: 16 }}>
+            No other active identities to merge into.
+          </div>
+        )}
+        {options.map((other) => (
+          <label
+            key={other.id}
+            className="row"
+            style={{
+              alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer',
+              borderBottom: '1px solid var(--border)',
+              background: target === other.id ? 'var(--bg-3)' : undefined,
+            }}
+          >
+            <input
+              type="radio"
+              name="merge-target-identity"
+              checked={target === other.id}
+              onChange={() => setTarget(other.id)}
+            />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: 12 }}>
+                {other.display_name ?? other.generated_identifier}
+              </span>
+              <span className="muted mono" style={{ display: 'block', fontSize: 10 }}>
+                {other.category} · {other.embedding_count} embeddings
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {chosen && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <span style={{ fontSize: 12 }}>
+            Result: <strong>{chosen.display_name ?? chosen.generated_identifier}</strong>{' '}
+            with about{' '}
+            <span className="mono">
+              {chosen.embedding_count + identity.embedding_count}
+            </span>{' '}
+            embeddings.{' '}
+            <span className="muted">
+              {identity.display_name ?? identity.generated_identifier} is removed
+              from recognition; its history is kept.
+            </span>
+          </span>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
 export function IdentitiesPage() {
   const identities = useSentinelStore((s) => s.identities)
   const refreshIdentities = useSentinelStore((s) => s.refreshIdentities)
@@ -125,6 +272,7 @@ export function IdentitiesPage() {
   const [category, setCategory] = useState<'' | IdentityCategory>('')
   const [statusFilter, setStatusFilter] = useState('ACTIVE')
   const [editing, setEditing] = useState<Identity | null>(null)
+  const [merging, setMerging] = useState<Identity | null>(null)
   const [rows, setRows] = useState<Identity[]>([])
   const [busy, setBusy] = useState(false)
 
@@ -329,6 +477,14 @@ export function IdentitiesPage() {
                       </button>
                       <button
                         className="btn ghost sm"
+                        onClick={() => setMerging(identity)}
+                        disabled={identity.status !== 'ACTIVE'}
+                        title="This is the same person as another identity — combine them"
+                      >
+                        Merge…
+                      </button>
+                      <button
+                        className="btn ghost sm"
                         onClick={() => void remove(identity)}
                       >
                         Remove
@@ -347,6 +503,13 @@ export function IdentitiesPage() {
           identity={editing}
           onClose={() => setEditing(null)}
           onSaved={() => void refreshIdentities()}
+        />
+      )}
+      {merging && (
+        <MergeIdentitiesDialog
+          identity={merging}
+          onClose={() => setMerging(null)}
+          onDone={() => void refreshIdentities()}
         />
       )}
     </div>

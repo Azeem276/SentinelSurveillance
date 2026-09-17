@@ -107,6 +107,16 @@ class TrackRepository(BaseRepository[Track]):
         )
         return int(result.rowcount or 0)
 
+    def reassign_identity(self, from_identity_id: int, to_identity_id: int) -> int:
+        """Point historical tracks at the surviving identity after a merge."""
+        result = self.session.execute(
+            update(Track)
+            .where(Track.identity_id == from_identity_id)
+            .values(identity_id=to_identity_id)
+        )
+        self.session.flush()
+        return int(result.rowcount or 0)
+
     def class_counts(self, source_id: int, *, since: datetime | None = None) -> dict[str, int]:
         stmt = select(Track.object_class, func.count(Track.id)).where(
             Track.source_id == source_id

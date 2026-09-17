@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import {
   BulkClassificationDialog, FaceClassificationDialog,
 } from '@/components/FaceClassificationDialog'
+import { MergeIdentityDialog } from '@/components/MergeIdentityDialog'
 import { Empty, fmtDateTime, relativeTime } from '@/components/primitives'
 import { api } from '@/services/api'
 import { useSentinelStore } from '@/stores/useSentinelStore'
@@ -17,6 +18,7 @@ export function ReviewPage() {
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [classifying, setClassifying] = useState<UnfamiliarFace | null>(null)
+  const [merging, setMerging] = useState<UnfamiliarFace | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [loading, setLoading] = useState(false)
 
@@ -155,6 +157,18 @@ export function ReviewPage() {
                   q {(face.quality_score * 100).toFixed(0)}%
                   {face.face_pixels ? ` · ${face.face_pixels}px` : ''}
                 </div>
+                {!!face.profile_samples && (
+                  <div
+                    className="face-card-meta"
+                    title={
+                      `${face.profile_samples} additional views of this face were ` +
+                      'collected across different angles and lighting. All of them ' +
+                      'are enrolled when you classify or merge this person.'
+                    }
+                  >
+                    +{face.profile_samples} angles
+                  </div>
+                )}
                 <div className="face-card-actions">
                   <button
                     className="btn success sm"
@@ -180,13 +194,21 @@ export function ReviewPage() {
                     Name…
                   </button>
                 </div>
-                <button
-                  className="btn ghost sm block"
-                  style={{ marginTop: 4 }}
-                  onClick={() => void dismiss(face)}
-                >
-                  Dismiss
-                </button>
+                <div className="face-card-actions" style={{ marginTop: 4 }}>
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => setMerging(face)}
+                    title="This is somebody already enrolled — add this face to them"
+                  >
+                    Merge…
+                  </button>
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => void dismiss(face)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -197,6 +219,13 @@ export function ReviewPage() {
         <FaceClassificationDialog
           face={classifying}
           onClose={() => setClassifying(null)}
+          onDone={() => void afterChange()}
+        />
+      )}
+      {merging && (
+        <MergeIdentityDialog
+          face={merging}
+          onClose={() => setMerging(null)}
           onDone={() => void afterChange()}
         />
       )}

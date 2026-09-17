@@ -83,6 +83,10 @@ class UnfamiliarFace(FaceRead):
     source_name: str | None = None
     image_url: str | None = None
     suggested_identifier: str | None = None
+    # How many extra angles of this person are waiting to be enrolled with
+    # them. A high number means classifying this face teaches the system a
+    # lot, not just one more picture.
+    profile_samples: int = 0
 
 
 class FaceClassifyRequest(BaseModel):
@@ -111,6 +115,34 @@ class BulkClassifyRequest(FaceClassifyRequest):
     face_ids: list[int] = Field(..., min_length=1, max_length=200)
     # Off by default: distinct people must not silently merge into one identity.
     merge_into_one_identity: bool = False
+
+
+class FaceMergeRequest(BaseModel):
+    """Attach a reviewed face to an identity that already exists."""
+
+    identity_id: int
+
+
+class IdentityMergeRequest(BaseModel):
+    """Fold this identity into another one, which survives."""
+
+    into_identity_id: int
+
+
+class MergeCandidate(BaseModel):
+    """A "this might already be somebody you know" suggestion."""
+
+    identity_id: int
+    label: str
+    display_name: str | None = None
+    generated_identifier: str
+    category: str
+    thumbnail_path: str | None = None
+    thumbnail_url: str | None = None
+    mean_score: float
+    best_score: float
+    samples_compared: int
+    embedding_count: int
 
 
 class ClassificationResponse(BaseModel):

@@ -48,13 +48,44 @@ class TestProximityBRules:
         )
         assert decision.action is SecurityAction.START_CONTINUOUS_ALARM
 
-    def test_unfamiliar_triggers_continuous_alarm(self):
+    def test_confirmed_unfamiliar_triggers_a_timed_alarm_first(self):
+        """First offence is loud but self-clearing, not a permanent siren."""
         decision = evaluate_proximity_b(
             recognition_state=RecognitionState.UNFAMILIAR, policy=DEFAULT
         )
-        assert decision.action is SecurityAction.START_CONTINUOUS_ALARM
+        assert decision.action is SecurityAction.START_TIMED_ALARM
         assert decision.alert_type is AlertType.CONTINUOUS_ALARM
         assert decision.severity == "CRITICAL"
+        assert decision.duration_seconds == 30
+
+    def test_unconfirmed_unfamiliar_does_not_alarm(self):
+        """The guard against one bad frame or one bad angle raising a siren."""
+        decision = evaluate_proximity_b(
+            recognition_state=RecognitionState.UNFAMILIAR,
+            policy=DEFAULT,
+            unknown_confirmed=False,
+        )
+        assert decision.action is SecurityAction.NONE
+        assert decision.reason == "unfamiliar_pending_confirmation"
+
+    def test_repeat_offender_escalates_to_a_continuous_alarm(self):
+        decision = evaluate_proximity_b(
+            recognition_state=RecognitionState.UNFAMILIAR,
+            policy=DEFAULT,
+            alarm_cycles=3,
+        )
+        assert decision.action is SecurityAction.START_CONTINUOUS_ALARM
+        assert decision.duration_seconds is None
+        assert decision.severity == "CRITICAL"
+
+    def test_escalation_threshold_is_configurable(self):
+        decision = evaluate_proximity_b(
+            recognition_state=RecognitionState.UNFAMILIAR,
+            policy=DEFAULT,
+            alarm_cycles=1,
+            escalate_after_cycles=1,
+        )
+        assert decision.action is SecurityAction.START_CONTINUOUS_ALARM
 
     def test_already_alarming_track_does_not_raise_again(self):
         """Frame-rate idempotence: one track, one alarm."""

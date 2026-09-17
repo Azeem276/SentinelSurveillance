@@ -26,6 +26,24 @@ def _expiration_job() -> None:
         log.error("expiration_sweep_failed", error=str(exc))
 
 
+def _alarm_expiry_job() -> None:
+    """Clear timed alarms whose window has elapsed.
+
+    Runs server-side for the same reason expiry does: a 30-second alarm must
+    stop after 30 seconds whether or not anybody has the console open.
+    """
+    try:
+        from app.alerts.engine import get_alert_engine
+        from app.db.session import session_scope
+
+        with session_scope() as session:
+            cleared = get_alert_engine().sweep_expired(session)
+        if cleared:
+            log.info("alarm_expiry_sweep", cleared=cleared)
+    except Exception as exc:  # pragma: no cover - the job must never die
+        log.error("alarm_expiry_sweep_failed", error=str(exc))
+
+
 def start_scheduler() -> BackgroundScheduler:
     global _scheduler
     if _scheduler is not None and _scheduler.running:
@@ -36,6 +54,15 @@ def start_scheduler() -> BackgroundScheduler:
         _expiration_job,
         trigger=IntervalTrigger(seconds=max(10, settings.expiration_scan_seconds)),
         id="temporary_identity_expiration",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # A 30-second alarm needs finer granularity than the identity sweep.
+    scheduler.add_job(
+        _alarm_expiry_job,
+        trigger=IntervalTrigger(seconds=2),
+        id="timed_alarm_expiry",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

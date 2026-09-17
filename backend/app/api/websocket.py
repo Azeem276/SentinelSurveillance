@@ -11,6 +11,7 @@ import contextlib
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from app.alerts.engine import get_alert_engine
 from app.core.logging import get_logger
 from app.db.session import session_scope
 from app.events.bus import get_bus
@@ -32,6 +33,8 @@ def _initial_snapshot() -> dict:
         "sources": list(manager.all_runtime_status().values()),
         "active_alerts": [],
         "pending_review": 0,
+        # The backend owns the mute state so every console agrees on it.
+        "alarm_sound": get_alert_engine().sound_enabled,
     }
     try:
         with session_scope() as session:
@@ -44,6 +47,7 @@ def _initial_snapshot() -> dict:
                     "started_at": a.started_at.isoformat(),
                     "track_id": a.track_id,
                     "identity_id": a.identity_id,
+                    "expires_at": (a.alert_metadata or {}).get("expires_at"),
                 }
                 for a in AlertRepository(session).active_alerts()
             ]

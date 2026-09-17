@@ -172,6 +172,96 @@ class FaceRecognitionIndex(FaceRecognizer):
             runner_up_score=round(float(runner_up), 4),
         )
 
+    def recognize_batch(
+        self, embeddings: list[np.ndarray], *, threshold: float | None = None
+    ) -> list[RecognitionMatch]:
+        """Match many embeddings in one matrix multiply.
+
+        A face profile holds up to a hundred views of one person; polling them
+        one at a time would repeat the same gather over the gallery a hundred
+        times. Here the whole profile is matched against the whole index in a
+        single ``(n, d) @ (d, m)`` product, which is what makes profile-level
+        identification affordable at frame rate.
+        """
+        if not embeddings:
+            return []
+        limit = self.threshold if threshold is None else threshold
+
+        stacked = np.vstack(
+            [np.asarray(e, dtype=np.float32).reshape(-1) for e in embeddings]
+        )
+        norms = np.linalg.norm(stacked, axis=1, keepdims=True)
+        usable = (norms > 1e-8).reshape(-1)
+        stacked = stacked / np.where(norms < 1e-8, 1.0, norms)
+
+        with self._lock:
+            matrix = self._matrix
+            owners = self._owners
+            entries = dict(self._entries)
+
+        if matrix.shape[0] == 0 or stacked.shape[1] != matrix.shape[1]:
+            return [
+                RecognitionMatch(
+                    state=RecognitionState.UNFAMILIAR
+                    if usable[i]
+                    else RecognitionState.FACE_UNRECOGNIZABLE
+                )
+                for i in range(stacked.shape[0])
+            ]
+
+        scores = stacked @ matrix.T          # (samples, gallery vectors)
+        now = datetime.now(timezone.utc)
+        active = np.array([owner.is_active(now) for owner in owners], dtype=bool)
+        if not active.any():
+            return [RecognitionMatch(state=RecognitionState.UNFAMILIAR)] * scores.shape[0]
+
+        # Collapse gallery columns down to one best score per identity.
+        identity_ids = sorted({owners[i].identity_id for i in np.flatnonzero(active)})
+        columns = {
+            ident: np.flatnonzero(
+                active & np.array([o.identity_id == ident for o in owners], dtype=bool)
+            )
+            for ident in identity_ids
+        }
+        per_identity = np.stack(
+            [scores[:, cols].max(axis=1) for ident, cols in columns.items()], axis=1
+        )
+
+        out: list[RecognitionMatch] = []
+        for row in range(per_identity.shape[0]):
+            if not usable[row]:
+                out.append(RecognitionMatch(state=RecognitionState.FACE_UNRECOGNIZABLE))
+                continue
+            values = per_identity[row]
+            order = np.argsort(values)[::-1]
+            best_idx = int(order[0])
+            best_score = float(values[best_idx])
+            runner_up = float(values[int(order[1])]) if values.size > 1 else 0.0
+            if best_score < limit:
+                out.append(
+                    RecognitionMatch(
+                        state=RecognitionState.UNFAMILIAR,
+                        score=round(best_score, 4),
+                        runner_up_score=round(runner_up, 4),
+                    )
+                )
+                continue
+            entry = entries[identity_ids[best_idx]]
+            out.append(
+                RecognitionMatch(
+                    state=(
+                        RecognitionState.PERMANENT_FAMILIAR
+                        if entry.category is IdentityCategory.PERMANENT
+                        else RecognitionState.TEMPORARY_FAMILIAR
+                    ),
+                    identity_id=entry.identity_id,
+                    label=entry.label,
+                    score=round(best_score, 4),
+                    runner_up_score=round(runner_up, 4),
+                )
+            )
+        return out
+
     # ---------------------------------------------------------- inspection
     @property
     def size(self) -> int:

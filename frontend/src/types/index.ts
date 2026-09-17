@@ -117,6 +117,13 @@ export interface OverlayObject {
   distance_m: number | null
   alarm: boolean
   duration_seconds: number
+  /** Face views collected for this person so far. */
+  face_samples?: number
+  /** Distinct pose/lighting conditions captured. */
+  pose_coverage?: number
+  /** How long this person has been judged unknown. */
+  unknown_seconds?: number
+  unknown_confirmed?: boolean
 }
 
 export interface FrameAnalysis {
@@ -172,6 +179,23 @@ export interface UnfamiliarFace {
   match_score: number | null
   review_status: ReviewStatus
   suggested_identifier: string | null
+  /** Extra angles of this person collected alongside the crop shown here. */
+  profile_samples?: number
+}
+
+/** An existing identity this reviewed face might already belong to. */
+export interface MergeCandidate {
+  identity_id: number
+  label: string
+  display_name: string | null
+  generated_identifier: string
+  category: IdentityCategory
+  thumbnail_path: string | null
+  thumbnail_url: string | null
+  mean_score: number
+  best_score: number
+  samples_compared: number
+  embedding_count: number
 }
 
 export interface SecurityEvent {
@@ -223,6 +247,8 @@ export interface Alert {
   identity_id: number | null
   security_event_id: number | null
   acknowledged: boolean
+  /** Set on a timed alarm: when it clears itself. */
+  expires_at?: string | null
 }
 
 export interface Recording {

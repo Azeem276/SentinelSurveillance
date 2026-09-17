@@ -3,15 +3,25 @@
 Order of operations for one processed frame:
 
     motion -> detection -> tracking -> proximity
-           -> (person && inside Proximity A) face detection
-           -> face quality gate -> embedding -> recognition
-           -> identity classification -> proximity events
-           -> security rules -> alerts
+           -> ONE frame-wide face detection
+           -> exclusive face-to-person assignment
+           -> face quality gate -> embedding -> per-track face profile
+           -> whole-profile recognition -> identity classification
+           -> proximity events -> security rules -> alerts
+
+Identity is decided from a *profile* - many views of one person's face
+gathered across angles and lighting while they are in the recognition zone -
+rather than from whichever frame was processed last. See
+``app.intelligence.face.profile``. Faces are detected once per frame and then
+assigned to people one-to-one (``app.intelligence.face.assign``), because in a
+crowd the largest face inside somebody's box is frequently not theirs.
 
 Cost control (section 49 of the brief):
   * the detector runs every ``detection_interval`` frames; tracking carries
     identity between detector runs,
   * face work happens only for people inside Proximity A,
+  * one face detection per frame serves every person in it,
+  * a track stops collecting face samples once its profile is full,
   * a recognised track is not re-recognised until its cooldown elapses.
 
 The pipeline owns no database session. It opens short transactions only when
@@ -36,8 +46,10 @@ from app.core.logging import DETECTION_ERROR, FACE_RECOGNITION_ERROR, get_logger
 from app.events.bus import get_bus
 from app.events.engine import DedupCache, EventContext, EventEmitter
 from app.intelligence.detection.base import ObjectDetector
+from app.intelligence.face.assign import FaceCandidate, assign_faces
 from app.intelligence.face.base import FaceDetector, FaceEmbedder, FaceQualityAssessor
 from app.intelligence.face.index import FaceRecognitionIndex, get_index
+from app.intelligence.face.profile import new_sample
 from app.intelligence.motion.detector import MotionDetector
 from app.intelligence.proximity.base import ProximityEstimator, ProximityZones
 from app.intelligence.track_state import TrackState, new_track_state
@@ -53,7 +65,9 @@ from app.models.identity import Face
 from app.repositories.detection_repository import (
     DetectionRepository, MotionRepository, TrackRepository,
 )
-from app.repositories.identity_repository import FaceRepository, IdentityRepository
+from app.repositories.identity_repository import (
+    FaceProfileSampleRepository, FaceRepository, IdentityRepository,
+)
 from app.security.rules import (
     AlertPolicy, SecurityAction, evaluate_proximity_b, evaluate_recognition,
     should_attempt_face_recognition,
@@ -65,10 +79,6 @@ log = get_logger(__name__)
 
 SessionFactory = Callable[[], Session]
 
-# A person box is cropped with a little context before face detection, and
-# only its upper portion is searched - faces are not in the legs.
-FACE_SEARCH_TOP_FRACTION = 0.55
-FACE_CROP_PADDING = 0.08
 
 
 @dataclass
@@ -364,6 +374,8 @@ class IntelligencePipeline:
         face_ms_total = 0.0
         overlay: list[dict] = []
         pending_detections: list[Detection] = []
+        face_candidates: list[FaceCandidate] = []
+        candidate_states: dict[int, TrackState] = {}
 
         for obj in tracked:
             state = self.tracks.get(obj.track_key)
@@ -403,15 +415,23 @@ class IntelligencePipeline:
             if previous_zone is not new_zone:
                 self._handle_zone_transition(state, previous_zone, new_zone, frame)
 
-            # Face work: people inside the recognition zone only.
+            # Face work: people inside the recognition zone only. Rather than
+            # running a face detector inside each person box - which lets one
+            # person's box claim their neighbour's face - eligible people are
+            # collected here and matched against a single frame-wide face
+            # detection below.
             if should_attempt_face_recognition(
                 object_class=obj.object_class,
                 in_recognition_zone=state.in_recognition_zone,
                 recognition_enabled=self.config.recognition_enabled,
             ) and state.should_attempt_recognition():
-                t0 = time.perf_counter()
-                self._process_face(state, image, frame, scale)
-                face_ms_total += (time.perf_counter() - t0) * 1000.0
+                face_candidates.append(
+                    FaceCandidate(
+                        track_key=obj.track_key,
+                        bbox=obj.bbox.clipped(image.shape[1], image.shape[0]),
+                    )
+                )
+                candidate_states[obj.track_key] = state
             elif obj.object_class == "person" and not state.in_recognition_zone:
                 # Too far to recognise: explicitly *pending*, never unfamiliar.
                 if state.recognition_state in (
@@ -419,8 +439,6 @@ class IntelligencePipeline:
                     RecognitionState.UNKNOWN_PENDING_RECOGNITION,
                 ):
                     state.recognition_state = RecognitionState.UNKNOWN_PENDING_RECOGNITION
-
-            self._apply_security(state, frame)
 
             if self.config.persist_detections and (
                 self._frames_since_detector == 0 or is_new
@@ -443,6 +461,19 @@ class IntelligencePipeline:
                     )
                 )
 
+        # Security and the overlay are applied after the face pass below, so
+        # what the operator sees is this frame's conclusion rather than the
+        # previous frame's.
+        if face_candidates:
+            t0 = time.perf_counter()
+            self._run_face_pass(face_candidates, candidate_states, image, frame, scale)
+            face_ms_total += (time.perf_counter() - t0) * 1000.0
+
+        for obj in tracked:
+            state = self.tracks.get(obj.track_key)
+            if state is None:
+                continue
+            self._apply_security(state, frame)
             overlay.append(state.to_overlay())
 
         if pending_detections:
@@ -642,63 +673,81 @@ class IntelligencePipeline:
         )
 
     # --------------------------------------------------------------- face
-    def _person_search_region(self, bbox: BBox, width: int, height: int) -> BBox:
-        pad_x = bbox.width * FACE_CROP_PADDING
-        pad_y = bbox.height * FACE_CROP_PADDING
-        return BBox(
-            bbox.x1 - pad_x,
-            bbox.y1 - pad_y,
-            bbox.x2 + pad_x,
-            bbox.y1 + bbox.height * FACE_SEARCH_TOP_FRACTION + pad_y,
-        ).clipped(width, height)
+    def _detect_frame_faces(self, image: np.ndarray) -> list[DetectedFace]:
+        """Find every face in the frame, once.
 
-    def _process_face(
-        self, state: TrackState, image: np.ndarray, frame: Frame, scale: float
-    ) -> None:
-        if self.face_detector is None or self.face_quality is None or state.bbox is None:
-            return
-        state.mark_recognition_attempted()
-
-        # Search the person's upper body in the *inference-resolution* image.
-        inference_bbox = state.bbox.scaled(1.0 / scale)
-        region = self._person_search_region(
-            inference_bbox, image.shape[1], image.shape[0]
-        )
-        x1, y1, x2, y2 = region.as_int_tuple()
-        if x2 - x1 < 8 or y2 - y1 < 8:
-            state.note_no_face()
-            return
-        crop = image[y1:y2, x1:x2]
-        if crop.size == 0:
-            state.note_no_face()
-            return
-
+        The old design ran the face detector separately inside each person's
+        box. That cost N detections for N people *and* let one person's search
+        region pick up a neighbour's face. Detecting once over the whole frame
+        and then deciding ownership is both cheaper in a crowd and the only
+        way to enforce that a face belongs to exactly one person.
+        """
+        if self.face_detector is None:
+            return []
         try:
-            faces = self.face_detector.detect(crop)
+            faces = self.face_detector.detect(image)
         except Exception as exc:
             self.stats.errors += 1
-            log.warning(FACE_RECOGNITION_ERROR, source=self.config.source_uid, error=str(exc))
-            state.note_no_face()
-            return
-
+            log.warning(FACE_RECOGNITION_ERROR, source=self.config.source_uid,
+                        stage="detect_frame", error=str(exc))
+            return []
         if not faces:
-            state.note_no_face()
+            return []
+        limit = get_settings().face_max_faces_per_frame
+        if len(faces) > limit:
+            # Under a genuine crowd, spend the budget on the biggest faces -
+            # they are the closest people and the ones the zones care about.
+            faces = sorted(faces, key=lambda f: f.bbox.area, reverse=True)[:limit]
+        self.stats.face_detections += len(faces)
+        return faces
+
+    def _run_face_pass(
+        self,
+        candidates: list[FaceCandidate],
+        states: dict[int, TrackState],
+        image: np.ndarray,
+        frame: Frame,
+        scale: float,
+    ) -> None:
+        """One face detection, exclusive assignment, then per-track ingest."""
+        for candidate in candidates:
+            state = states.get(candidate.track_key)
+            if state is not None:
+                state.mark_recognition_attempted()
+
+        faces = self._detect_frame_faces(image)
+        assignments = assign_faces(faces, candidates) if faces else {}
+
+        for candidate in candidates:
+            state = states.get(candidate.track_key)
+            if state is None:
+                continue
+            assignment = assignments.get(candidate.track_key)
+            if assignment is None:
+                # No face could be attributed to this person *this frame*.
+                # Guessing here is what produced cross-assigned identities.
+                state.note_no_face()
+            else:
+                self._ingest_face(state, assignment.face, image, frame, scale)
+            self._resolve_identity(state, frame)
+
+    def _ingest_face(
+        self,
+        state: TrackState,
+        face: DetectedFace,
+        image: np.ndarray,
+        frame: Frame,
+        scale: float,
+    ) -> None:
+        """Grade one observation and file it in the track's face profile."""
+        if self.face_quality is None:
             return
 
-        # The biggest face in the person's box is the one that belongs to them.
-        face = max(faces, key=lambda f: f.bbox.area)
-        self.stats.face_detections += 1
-
-        quality = self.face_quality.assess(face, crop)
+        quality = self.face_quality.assess(face, image)
         face.quality = quality
 
         # Face geometry back into original-frame coordinates.
-        full_face_bbox = BBox(
-            (x1 + face.bbox.x1) * scale,
-            (y1 + face.bbox.y1) * scale,
-            (x1 + face.bbox.x2) * scale,
-            (y1 + face.bbox.y2) * scale,
-        ).clipped(frame.width, frame.height)
+        full_face_bbox = face.bbox.scaled(scale).clipped(frame.width, frame.height)
 
         if not quality.ok:
             state.note_unusable_face()
@@ -721,35 +770,242 @@ class IntelligencePipeline:
             state.note_unusable_face()
             return
 
-        embedding = self.face_embedder.embed(crop, face)
+        # Align against the full inference frame: alignCrop gets more context
+        # than a tight person crop, which makes the transform more stable.
+        embedding = self.face_embedder.embed(image, face)
         if embedding is None:
             state.note_unusable_face()
             return
 
-        match = self.index.recognize(
-            embedding, threshold=self.config.recognition_threshold
+        state.faces_detected += 1
+        state.last_face_quality_ok = True
+
+        # Enrolment crops come from the ORIGINAL frame, not the downscaled
+        # inference copy. Enrolling 48px faces upscaled to 112px was capping
+        # gallery quality for every identity the system ever learned.
+        crop = (
+            self._full_res_crop(frame.image, full_face_bbox)
+            if self.config.store_face_crops
+            else None
         )
-        self.stats.recognitions += 1
+        state.profile.add(
+            new_sample(
+                embedding=embedding,
+                quality=quality,
+                frame_number=frame.frame_number,
+                timestamp=frame.timestamp,
+                crop=crop,
+                bbox=full_face_bbox.as_tuple(),
+            )
+        )
+
+    @staticmethod
+    def _full_res_crop(
+        image: np.ndarray, bbox: BBox, margin: float = 0.2
+    ) -> np.ndarray | None:
+        """Cut a face out of the full-resolution frame, with context."""
+        if image is None or image.size == 0:
+            return None
+        h, w = image.shape[:2]
+        mx = bbox.width * margin
+        my = bbox.height * margin
+        x1 = int(max(0, bbox.x1 - mx))
+        y1 = int(max(0, bbox.y1 - my))
+        x2 = int(min(w, bbox.x2 + mx))
+        y2 = int(min(h, bbox.y2 + my))
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            return None
+        return image[y1:y2, x1:x2].copy()
+
+    def _resolve_identity(self, state: TrackState, frame: Frame) -> None:
+        """Ask the whole profile who this track is, and act on the answer."""
+        if not state.profile.ready() or not state.profile.should_reverdict():
+            return
+
+        settings = get_settings()
         previous_state = state.recognition_state
         previous_identity = state.identity_id
-        changed = state.apply_match(match)
 
-        self._persist_face(
-            state, face, full_face_bbox, frame,
-            recognition_state=state.recognition_state,
-            match_score=match.score,
-            store_crop=state.recognition_state is RecognitionState.UNFAMILIAR,
-            embedding=embedding,
+        verdict = state.profile.verdict(
+            self.index,
+            threshold=self.config.recognition_threshold,
+            margin=settings.face_match_margin,
+            support_ratio=settings.face_profile_support_ratio,
         )
+        self.stats.recognitions += 1
+        changed = state.apply_profile_verdict(verdict, now=frame.timestamp)
 
-        if changed or previous_identity != state.identity_id:
-            self._on_identity_settled(state, previous_state, frame, match_score=match.score)
+        if verdict.conclusive and verdict.is_familiar:
+            self._persist_face(
+                state, None, None, frame,
+                recognition_state=state.recognition_state,
+                match_score=verdict.score,
+                store_crop=False,
+            )
+            # The system just changed its mind about somebody it was alarming
+            # on. Cancel that alarm instead of leaving it for an operator.
+            if previous_state is RecognitionState.UNFAMILIAR:
+                self._cancel_alarm(state, frame, reason="identity_resolved")
+            if changed or previous_identity != state.identity_id:
+                self._on_identity_settled(
+                    state, previous_state, frame, match_score=verdict.score
+                )
+            return
+
+        if state.alarm_eligible and not state.profile_persisted:
+            # Confirmed unknown: publish the multi-angle evidence for review.
+            self._persist_unknown_for_review(state, frame, verdict)
+
+        if changed:
+            self.bus.emit(
+                "recognition",
+                source_uid=self.config.source_uid,
+                track_id=state.track_key,
+                previous_state=previous_state.value,
+                state=state.recognition_state.value,
+                identity_id=state.identity_id,
+                identity=state.identity_label,
+                score=round(verdict.score, 3),
+                verdict=verdict.to_dict(),
+            )
+
+    def _cancel_alarm(self, state: TrackState, frame: Frame, *, reason: str) -> None:
+        if not self.alerts.is_alarming(self.config.source_id, state.track_key):
+            return
+        with self._session() as session:
+            if session is None:
+                return
+            self.alerts.stop_for_track(
+                session,
+                source_id=self.config.source_id,
+                track_key=state.track_key,
+                source_uid=self.config.source_uid,
+                reason=reason,
+            )
+            EventEmitter(session, self._event_context()).emit(
+                EventType.ALARM_STOPPED,
+                when=frame.timestamp,
+                track_id=state.db_track_id,
+                identity_id=state.identity_id,
+                label=state.display_label,
+                message=f"Alarm cancelled: {reason} ({state.display_label})",
+                metadata={"track_key": state.track_key, "reason": reason},
+            )
+        state.alarm_alert_id = None
+
+    def _persist_unknown_for_review(
+        self, state: TrackState, frame: Frame, verdict
+    ) -> None:
+        """Publish a confirmed unknown to the review queue, with its gallery.
+
+        One ``Face`` row is the review item; the rest of the profile is stored
+        beside it as :class:`FaceProfileSample` rows. When the operator
+        classifies that face, all of it is enrolled at once, so the new
+        identity starts life knowing what this person looks like from every
+        angle the camera saw - which is what stops them being re-detected as a
+        stranger tomorrow.
+        """
+        best = state.profile.best_sample()
+        if best is None:
+            return
+        gallery = state.profile.gallery()
+        state.profile_persisted = True
+
+        primary_path = (
+            self._write_face_crop(state, best.crop, frame)
+            if best.crop is not None
+            else None
+        )
+        box = best.bbox or (0.0, 0.0, 0.0, 0.0)
+
+        with self._session() as session:
+            if session is None:
+                state.profile_persisted = False
+                return
+            record = Face(
+                source_id=self.config.source_id,
+                track_id=state.db_track_id,
+                identity_id=None,
+                recording_id=self._recording_id,
+                detected_at=frame.timestamp,
+                frame_number=best.frame_number,
+                image_path=primary_path,
+                bbox_x1=box[0], bbox_y1=box[1], bbox_x2=box[2], bbox_y2=box[3],
+                detection_confidence=1.0,
+                quality_score=best.quality,
+                blur_score=None,
+                brightness=best.brightness,
+                face_pixels=best.face_pixels,
+                quality_ok=True,
+                quality_reason="profile_best",
+                recognition_state=RecognitionState.UNFAMILIAR,
+                match_score=verdict.score,
+            )
+            FaceRepository(session).add(record)
+            session.flush()
+
+            embedder_name = getattr(self.face_embedder, "name", "unknown")
+            samples = FaceProfileSampleRepository(session)
+            stored = 0
+            for sample in gallery:
+                path = None
+                if sample is not best and sample.crop is not None:
+                    path = self._write_face_crop(state, sample.crop, frame, suffix=f"v{stored + 1}")
+                samples.add_sample(
+                    face_id=record.id,
+                    source_id=self.config.source_id,
+                    track_id=state.db_track_id,
+                    vector=sample.embedding,
+                    model_name=embedder_name,
+                    quality_score=sample.quality,
+                    yaw=sample.yaw,
+                    brightness=sample.brightness,
+                    face_pixels=sample.face_pixels,
+                    image_path=path,
+                    frame_number=sample.frame_number,
+                )
+                stored += 1
+
+            emitter = EventEmitter(session, self._event_context())
+            event = emitter.open(
+                EventType.UNKNOWN_FACE,
+                dedup_key=f"track:{state.track_key}:unknown",
+                when=frame.timestamp,
+                track_id=state.db_track_id,
+                face_id=record.id,
+                severity=EventSeverity.WARNING,
+                label="UNKNOWN",
+                message=(
+                    f"Unfamiliar person confirmed over "
+                    f"{state.unknown_evidence_seconds:.0f}s "
+                    f"({verdict.samples} face samples)"
+                ),
+                confidence=verdict.score,
+                metadata={
+                    "track_key": state.track_key,
+                    "profile_samples": verdict.samples,
+                    "gallery_stored": stored,
+                    "pose_coverage": state.profile.bucket_coverage,
+                    "support": round(verdict.support, 3),
+                    "evidence_seconds": round(state.unknown_evidence_seconds, 1),
+                },
+            )
+            state.unknown_event_id = event.id
+
+        self.bus.emit(
+            "face",
+            source_uid=self.config.source_uid,
+            track_id=state.track_key,
+            state=RecognitionState.UNFAMILIAR.value,
+            reason="confirmed_unknown",
+            samples=verdict.samples,
+        )
 
     def _persist_face(
         self,
         state: TrackState,
-        face: DetectedFace,
-        full_bbox: BBox,
+        face: DetectedFace | None,
+        full_bbox: BBox | None,
         frame: Frame,
         *,
         recognition_state: RecognitionState,
@@ -759,11 +1015,15 @@ class IntelligencePipeline:
     ) -> None:
         """Persist a face observation.
 
+        ``face`` may be ``None`` when the conclusion came from the track's
+        whole face profile rather than one crop - a profile-level recognition
+        is still worth recording, it just has no single frame to point at.
+
         Crops are written to disk only when they are actionable (an unfamiliar
         face awaiting review) or belong to a new identity - we do not
         accumulate face imagery unnecessarily.
         """
-        quality = face.quality
+        quality = face.quality if face is not None else None
         # One stored face per track per condition: reviewing 400 crops of the
         # same person helps nobody.
         dedup_key = f"track:{state.track_key}:face:{recognition_state.value}"
@@ -771,7 +1031,12 @@ class IntelligencePipeline:
             return
 
         image_path: str | None = None
-        if store_crop and self.config.store_face_crops and face.crop is not None:
+        if (
+            store_crop
+            and self.config.store_face_crops
+            and face is not None
+            and face.crop is not None
+        ):
             image_path = self._write_face_crop(state, face.crop, frame)
 
         with self._session() as session:
@@ -785,11 +1050,11 @@ class IntelligencePipeline:
                 detected_at=frame.timestamp,
                 frame_number=frame.frame_number,
                 image_path=image_path,
-                bbox_x1=full_bbox.x1,
-                bbox_y1=full_bbox.y1,
-                bbox_x2=full_bbox.x2,
-                bbox_y2=full_bbox.y2,
-                detection_confidence=face.confidence,
+                bbox_x1=full_bbox.x1 if full_bbox else 0.0,
+                bbox_y1=full_bbox.y1 if full_bbox else 0.0,
+                bbox_x2=full_bbox.x2 if full_bbox else 0.0,
+                bbox_y2=full_bbox.y2 if full_bbox else 0.0,
+                detection_confidence=face.confidence if face is not None else 0.0,
                 quality_score=quality.score if quality else 0.0,
                 blur_score=quality.blur if quality else None,
                 brightness=quality.brightness if quality else None,
@@ -838,12 +1103,23 @@ class IntelligencePipeline:
                     confidence=match_score,
                 )
 
-    def _write_face_crop(self, state: TrackState, crop: np.ndarray, frame: Frame) -> str | None:
+    def _write_face_crop(
+        self,
+        state: TrackState,
+        crop: np.ndarray,
+        frame: Frame,
+        *,
+        suffix: str | None = None,
+    ) -> str | None:
+        """Write one crop. ``suffix`` distinguishes gallery views of a track."""
+        if crop is None or getattr(crop, "size", 0) == 0:
+            return None
         try:
             stamp = frame.timestamp.astimezone().strftime("%Y%m%d_%H%M%S")
+            tail = f"_{suffix}" if suffix else ""
             name = (
                 f"{slugify(self.config.source_uid)}_track{state.track_key}_{stamp}_"
-                f"{frame.frame_number}.jpg"
+                f"{frame.frame_number}{tail}.jpg"
             )
             path = face_root() / "unfamiliar" / name
             ensure_parent(path)
@@ -936,15 +1212,27 @@ class IntelligencePipeline:
 
     # ----------------------------------------------------------- security
     def _apply_security(self, state: TrackState, frame: Frame) -> None:
-        """Run the rule engine for a track inside the alarm zone."""
+        """Run the rule engine for a track inside the alarm zone.
+
+        An unknown person only reaches the alarm branch once their unfamiliar
+        verdict has survived the confirmation window; ``alarm_cycles`` then
+        decides whether they get a self-clearing 30-second alarm or, on
+        repeat, one an operator has to acknowledge.
+        """
         if not state.is_person or not state.in_alarm_zone:
             return
 
         already = self.alerts.is_alarming(self.config.source_id, state.track_key)
+        if not already and not state.alarm_rearmed(frame.timestamp):
+            # A timed alarm for this person has only just finished. Let the
+            # quiet gap run before deciding whether they still warrant one.
+            return
         decision = evaluate_proximity_b(
             recognition_state=state.recognition_state,
             policy=self.config.policy,
             already_alarming=already,
+            unknown_confirmed=state.unknown_confirmed,
+            alarm_cycles=state.alarm_cycles,
         )
         if decision.action is SecurityAction.NONE:
             return
@@ -953,7 +1241,10 @@ class IntelligencePipeline:
             if session is None:
                 return
             emitter = EventEmitter(session, self._event_context())
-            if decision.action is SecurityAction.START_CONTINUOUS_ALARM:
+            if decision.action in (
+                SecurityAction.START_CONTINUOUS_ALARM,
+                SecurityAction.START_TIMED_ALARM,
+            ):
                 event = emitter.emit(
                     EventType.ALARM_STARTED,
                     when=frame.timestamp,
@@ -966,6 +1257,11 @@ class IntelligencePipeline:
                         "track_key": state.track_key,
                         "distance_m": state.distance_m,
                         "recognition_state": state.recognition_state.value,
+                        "timed": decision.duration_seconds is not None,
+                        "duration_seconds": decision.duration_seconds,
+                        "alarm_cycle": state.alarm_cycles + 1,
+                        "evidence_seconds": round(state.unknown_evidence_seconds, 1),
+                        "face_samples": state.profile.count,
                     },
                 )
                 alert = self.alerts.start_continuous(
@@ -978,9 +1274,12 @@ class IntelligencePipeline:
                     identity_id=state.identity_id,
                     identity_label=state.identity_label,
                     security_event_id=event.id,
+                    duration_seconds=decision.duration_seconds,
                 )
                 if alert is not None:
                     state.alarm_alert_id = alert.id
+                    state.alarm_cycles += 1
+                    state.last_alarm_at = frame.timestamp
             elif decision.action is SecurityAction.BEEP:
                 key = f"track:{state.track_key}:beep_b"
                 if self.dedup.should_emit(key, when=frame.timestamp, window_seconds=30.0):

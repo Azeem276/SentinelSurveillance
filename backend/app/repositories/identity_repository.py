@@ -12,7 +12,7 @@ from app.models.enums import (
     FaceReviewStatus, IdentityCategory, IdentityStatus, RecognitionState,
 )
 from app.models.identity import (
-    Face, FaceEmbedding, Identity, TemporaryIdentityExpiration,
+    Face, FaceEmbedding, FaceProfileSample, Identity, TemporaryIdentityExpiration,
 )
 from app.repositories.base import BaseRepository
 
@@ -126,10 +126,18 @@ class IdentityRepository(BaseRepository[Identity]):
         stmt = stmt.order_by(desc(Identity.created_at)).limit(limit).offset(offset)
         return list(self.session.execute(stmt).scalars().all())
 
-    def active_index_records(self) -> list[tuple[IndexEntry, np.ndarray]]:
-        """Everything the recognition index needs, in one query."""
+    def active_index_records(
+        self, *, model_name: str | None = None, dim: int | None = None
+    ) -> list[tuple[IndexEntry, np.ndarray]]:
+        """Everything the recognition index needs, in one query.
+
+        Embeddings are filtered to the *current* embedder. Vectors produced by
+        a different model are not comparable with today's queries, and letting
+        them sit in the matcher produces silently meaningless similarities
+        rather than an error anybody would notice.
+        """
         now = datetime.now(timezone.utc)
-        rows = self.session.execute(
+        stmt = (
             select(
                 Identity.id,
                 Identity.display_name,
@@ -144,7 +152,12 @@ class IdentityRepository(BaseRepository[Identity]):
                 Identity.status == IdentityStatus.ACTIVE,
                 or_(Identity.expires_at.is_(None), Identity.expires_at > now),
             )
-        ).all()
+        )
+        if model_name:
+            stmt = stmt.where(FaceEmbedding.model_name == model_name)
+        if dim:
+            stmt = stmt.where(FaceEmbedding.dim == dim)
+        rows = self.session.execute(stmt).all()
 
         records: list[tuple[IndexEntry, np.ndarray]] = []
         for ident_id, name, identifier, category, expires_at, blob, dim in rows:
@@ -343,6 +356,16 @@ class FaceRepository(BaseRepository[Face]):
             )
         )
 
+    def reassign(self, from_identity_id: int, to_identity_id: int) -> int:
+        """Move stored face crops to the surviving identity after a merge."""
+        result = self.session.execute(
+            update(Face)
+            .where(Face.identity_id == from_identity_id)
+            .values(identity_id=to_identity_id)
+        )
+        self.session.flush()
+        return int(result.rowcount or 0)
+
     def best_for_track(self, track_id: int) -> Face | None:
         return self.session.execute(
             select(Face)
@@ -395,3 +418,105 @@ class FaceEmbeddingRepository(BaseRepository[FaceEmbedding]):
             ).scalar()
             or 0
         )
+
+    def has_origin_key(self, identity_id: int, origin: str) -> bool:
+        """Has this exact enrolment source already been ingested?
+
+        Used to stop ``enrol-dataset`` re-embedding the same photo every time
+        it is run, which previously grew an identity's gallery with duplicates
+        on every sweep.
+        """
+        return (
+            self.session.execute(
+                select(FaceEmbedding.id).where(
+                    FaceEmbedding.identity_id == identity_id,
+                    FaceEmbedding.origin == origin,
+                )
+            ).first()
+            is not None
+        )
+
+    def reassign(self, from_identity_id: int, to_identity_id: int) -> int:
+        """Move every embedding from one identity to another (merge)."""
+        result = self.session.execute(
+            update(FaceEmbedding)
+            .where(FaceEmbedding.identity_id == from_identity_id)
+            .values(identity_id=to_identity_id)
+        )
+        self.session.flush()
+        return int(result.rowcount or 0)
+
+
+class FaceProfileSampleRepository(BaseRepository[FaceProfileSample]):
+    """The multi-angle gallery collected for one unreviewed person.
+
+    These rows exist only between "the pipeline decided this person is
+    unknown" and "an operator classified or dismissed them". They are the
+    reason a newly created identity knows what somebody looks like from every
+    angle the camera saw, rather than from the one crop that happened to be
+    saved first.
+    """
+
+    model = FaceProfileSample
+
+    def add_sample(
+        self,
+        *,
+        face_id: int,
+        source_id: int,
+        vector: np.ndarray,
+        model_name: str,
+        track_id: int | None = None,
+        quality_score: float = 0.0,
+        yaw: float = 0.0,
+        brightness: float = 0.0,
+        face_pixels: int | None = None,
+        image_path: str | None = None,
+        frame_number: int = 0,
+    ) -> FaceProfileSample:
+        array = np.asarray(vector, dtype=np.float32).reshape(-1)
+        return self.add(
+            FaceProfileSample(
+                face_id=face_id,
+                source_id=source_id,
+                track_id=track_id,
+                vector=to_bytes(array),
+                dim=int(array.size),
+                model_name=model_name,
+                quality_score=float(quality_score),
+                yaw=float(yaw),
+                brightness=float(brightness),
+                face_pixels=face_pixels,
+                image_path=image_path,
+                frame_number=int(frame_number),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    def list_for_face(self, face_id: int) -> list[FaceProfileSample]:
+        return list(
+            self.session.execute(
+                select(FaceProfileSample)
+                .where(FaceProfileSample.face_id == face_id)
+                .order_by(desc(FaceProfileSample.quality_score))
+            )
+            .scalars()
+            .all()
+        )
+
+    def count_for_face(self, face_id: int) -> int:
+        return int(
+            self.session.execute(
+                select(func.count(FaceProfileSample.id)).where(
+                    FaceProfileSample.face_id == face_id
+                )
+            ).scalar()
+            or 0
+        )
+
+    def delete_for_face(self, face_id: int) -> int:
+        samples = self.list_for_face(face_id)
+        for sample in samples:
+            self.session.delete(sample)
+        self.session.flush()
+        return len(samples)

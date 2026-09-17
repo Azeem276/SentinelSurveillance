@@ -203,10 +203,15 @@ class PassthroughTracker(ObjectTracker):
 
     name = "passthrough"
 
-    def __init__(self, *, max_age: int | None = None, min_hits: int = 1) -> None:
+    def __init__(self, *, max_age: int | None = None, min_hits: int | None = None) -> None:
         settings = get_settings()
         self.max_age = settings.track_max_age if max_age is None else max_age
-        self.min_hits = min_hits
+        # Honour TRACK_MIN_HITS. This defaulted to 1 while the IoU tracker read
+        # the setting, so on the real YOLO path every first-frame detection -
+        # including every false positive - immediately became a confirmed
+        # track, a database row and an event. The configured confirmation
+        # requirement was being silently ignored in production.
+        self.min_hits = settings.track_min_hits if min_hits is None else min_hits
         self._tracks: dict[int, TrackedObject] = {}
         self._removed: list[int] = []
         # Same confirmation policy, disjoint id range so keys never collide.
@@ -228,6 +233,7 @@ class PassthroughTracker(ObjectTracker):
                     bbox=det.bbox,
                     object_class=det.object_class,
                     confidence=det.confidence,
+                    hits=1,
                     is_confirmed=self.min_hits <= 1,
                 )
             else:

@@ -10,6 +10,11 @@ flip-flopping:
   never UNFAMILIAR. Recognition was not possible yet, so no conclusion is drawn.
 * Recognition is not re-run every frame: once a track is identified, it is
   re-verified only after a cooldown.
+* A track owns a :class:`~app.intelligence.face.profile.FaceProfile` - many
+  views of the same face - and is identified from the profile as a whole.
+  Being declared UNFAMILIAR additionally requires the profile to say so
+  repeatedly over ``UNKNOWN_CONFIRM_SECONDS``, so no single frame, angle or
+  shadow can raise an alarm on its own.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.config import get_settings
+from app.intelligence.face.profile import FaceProfile, ProfileVerdict
 from app.intelligence.types import BBox, ProximityResult, RecognitionMatch
 from app.models.enums import ProximityZone, RecognitionState
 
@@ -66,6 +72,19 @@ class TrackState:
     _pending_state: RecognitionState | None = None
     _pending_label: str | None = None
     _pending_score: float = 0.0
+
+    # --- face profile (many views of this person's face) ------------------
+    profile: FaceProfile = field(default_factory=FaceProfile)
+    last_verdict: ProfileVerdict | None = None
+    # Sustained-unknown evidence. An alarm needs all three of these.
+    unknown_since: datetime | None = None
+    unknown_verdicts: int = 0
+    unknown_confirmed: bool = False
+    # How many times this track has been through the alarm cycle, which is
+    # what escalates a repeat offender from a timed alarm to a continuous one.
+    alarm_cycles: int = 0
+    last_alarm_at: datetime | None = None
+    profile_persisted: bool = False
 
     # --- proximity --------------------------------------------------------
     proximity_zone: ProximityZone = ProximityZone.UNKNOWN
@@ -145,7 +164,13 @@ class TrackState:
 
     # --------------------------------------------------------- recognition
     def should_attempt_recognition(self, *, cooldown: int | None = None) -> bool:
-        """Face work is expensive: only run it when it can change something."""
+        """Face work is expensive: only run it when it can change something.
+
+        While the profile is still filling, every processed frame is useful -
+        each one is a chance at an angle or a light level we do not have yet.
+        Once it is full the track has all the evidence it is going to get, so
+        it drops back to periodic re-verification.
+        """
         if not self.is_person:
             return False
         if not self.in_recognition_zone:
@@ -153,6 +178,12 @@ class TrackState:
         cooldown = (
             get_settings().recognition_cooldown_frames if cooldown is None else cooldown
         )
+        if not self.profile.is_full:
+            if self.recognition_state in FAMILIAR_STATES:
+                # Known already, but still worth widening their gallery - just
+                # not at full rate.
+                return self.frames_since_recognition >= max(1, cooldown // 4)
+            return True
         if self.recognition_state in FAMILIAR_STATES:
             # Confirmed identity: re-verify only occasionally.
             return self.frames_since_recognition >= cooldown
@@ -167,10 +198,16 @@ class TrackState:
         self.frames_since_recognition = 0
 
     def note_no_face(self) -> None:
-        """A person is visible but no face was found in the crop."""
+        """A person is visible but no face could be attributed to them."""
         self.last_face_quality_ok = False
         if self.recognition_state in CONCLUSIVE_STATES:
             return  # keep what we already concluded
+        if self.unknown_since is not None:
+            # Mid-assessment. Losing sight of the face for a frame does not
+            # undo the evidence gathered so far, and flipping the label back
+            # and forth would make the overlay unreadable.
+            self.recognition_state = RecognitionState.UNKNOWN_PENDING_RECOGNITION
+            return
         self.recognition_state = (
             RecognitionState.UNKNOWN_PENDING_RECOGNITION
             if not self.ever_entered_a
@@ -241,6 +278,143 @@ class TrackState:
         self._pending_label = None
         self._pending_score = 0.0
 
+    # ------------------------------------------------------ profile verdict
+    def apply_profile_verdict(
+        self,
+        verdict: ProfileVerdict,
+        *,
+        now: datetime | None = None,
+        confirm_seconds: float | None = None,
+        min_verdicts: int | None = None,
+    ) -> bool:
+        """Fold a whole-profile conclusion into the track.
+
+        Returns True when the track's recognition state changed.
+
+        The asymmetry here is deliberate and is the point of the whole
+        mechanism. Recognising somebody is good news and is applied as soon as
+        the profile agrees. Declaring somebody unknown is the step that can set
+        off an alarm, so it additionally has to hold for ``confirm_seconds``
+        across ``min_verdicts`` separate verdicts. A person who turns their
+        head, walks through a shadow, or is briefly mistaken for nobody simply
+        never reaches that bar.
+        """
+        settings = get_settings()
+        now = now or datetime.now(timezone.utc)
+        if confirm_seconds is None:
+            confirm_seconds = settings.unknown_confirm_seconds
+        if min_verdicts is None:
+            min_verdicts = settings.unknown_confirm_min_verdicts
+
+        self.last_verdict = verdict
+
+        if not verdict.conclusive:
+            # No conclusion: hold whatever we already believe. An inconclusive
+            # profile is not evidence of anything and must not decay into one.
+            return False
+
+        if verdict.is_familiar:
+            self._clear_unknown_evidence()
+            self.last_face_quality_ok = True
+            changed = (
+                self.recognition_state is not verdict.state
+                or self.identity_id != verdict.identity_id
+            )
+            self.recognition_state = verdict.state
+            self.identity_id = verdict.identity_id
+            self.identity_label = verdict.label
+            self.recognition_confidence = verdict.score
+            self._reset_pending()
+            return changed
+
+        # Unfamiliar: start (or continue) accumulating evidence.
+        self.last_face_quality_ok = True
+        if self.recognition_state in FAMILIAR_STATES:
+            # A previously identified person is not demoted by the profile
+            # drifting; that needs the same repeated evidence as a switch.
+            return self._apply_unknown_against_known(verdict)
+
+        if self.unknown_since is None:
+            self.unknown_since = now
+        self.unknown_verdicts += 1
+        self.recognition_confidence = verdict.score
+
+        elapsed = (now - self.unknown_since).total_seconds()
+        if (
+            not self.unknown_confirmed
+            and elapsed >= confirm_seconds
+            and self.unknown_verdicts >= max(1, min_verdicts)
+        ):
+            self.unknown_confirmed = True
+            changed = self.recognition_state is not RecognitionState.UNFAMILIAR
+            self.recognition_state = RecognitionState.UNFAMILIAR
+            self.identity_id = None
+            self.identity_label = None
+            return changed
+
+        if not self.unknown_confirmed:
+            # Still gathering: an unconfirmed unknown is *pending*, which the
+            # rule engine treats as "no conclusion" and never alarms on.
+            if self.recognition_state not in CONCLUSIVE_STATES:
+                self.recognition_state = RecognitionState.UNKNOWN_PENDING_RECOGNITION
+        return False
+
+    def _apply_unknown_against_known(self, verdict: ProfileVerdict) -> bool:
+        """An unfamiliar verdict for a track that already has an identity."""
+        votes = get_settings().face_votes_to_switch_identity
+        if self._pending_state is RecognitionState.UNFAMILIAR:
+            self._pending_votes += 1
+        else:
+            self._pending_state = RecognitionState.UNFAMILIAR
+            self._pending_identity = None
+            self._pending_label = None
+            self._pending_votes = 1
+        self._pending_score = verdict.score
+        if self._pending_votes < votes:
+            return False
+        self.recognition_state = RecognitionState.UNFAMILIAR
+        self.identity_id = None
+        self.identity_label = None
+        self.recognition_confidence = verdict.score
+        self._reset_pending()
+        # The evidence clock starts now, so even a demotion cannot alarm
+        # instantly.
+        self.unknown_since = None
+        self.unknown_verdicts = 0
+        self.unknown_confirmed = False
+        return True
+
+    def _clear_unknown_evidence(self) -> None:
+        self.unknown_since = None
+        self.unknown_verdicts = 0
+        self.unknown_confirmed = False
+
+    @property
+    def unknown_evidence_seconds(self) -> float:
+        if self.unknown_since is None:
+            return 0.0
+        return max(0.0, (self.last_seen_at - self.unknown_since).total_seconds())
+
+    @property
+    def alarm_eligible(self) -> bool:
+        """Only a *confirmed* unknown may raise an alarm."""
+        return (
+            self.recognition_state is RecognitionState.UNFAMILIAR
+            and self.unknown_confirmed
+        )
+
+    def alarm_rearmed(self, now: datetime, *, gap_seconds: float | None = None) -> bool:
+        """Has the quiet gap after this track's last alarm elapsed?
+
+        Without this a 30-second alarm would simply restart on the very next
+        frame, which is a continuous alarm wearing a disguise.
+        """
+        if self.last_alarm_at is None:
+            return True
+        if gap_seconds is None:
+            gap_seconds = get_settings().alarm_rearm_seconds
+        return (now - self.last_alarm_at).total_seconds() >= gap_seconds
+
     def invalidate_identity(self, identity_id: int) -> None:
         """Called when an identity is deleted or expires mid-track."""
         if self.identity_id != identity_id:
@@ -251,6 +425,8 @@ class TrackState:
         self.recognition_state = RecognitionState.NO_FACE
         self.frames_since_recognition = 1_000_000
         self._reset_pending()
+        self._clear_unknown_evidence()
+        self.last_verdict = None
 
     # ------------------------------------------------------------ display
     @property
@@ -282,6 +458,12 @@ class TrackState:
             "distance_m": round(self.distance_m, 2) if self.distance_m is not None else None,
             "alarm": self.alarm_alert_id is not None,
             "duration_seconds": round(self.duration_seconds, 1),
+            # Evidence gathering, so the operator can see *why* a person is
+            # still unlabelled rather than assuming the system missed them.
+            "face_samples": self.profile.count,
+            "pose_coverage": self.profile.bucket_coverage,
+            "unknown_seconds": round(self.unknown_evidence_seconds, 1),
+            "unknown_confirmed": self.unknown_confirmed,
         }
 
 

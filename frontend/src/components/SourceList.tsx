@@ -4,17 +4,20 @@ import { useMemo, useState } from 'react'
 import { api } from '@/services/api'
 import { useSentinelStore } from '@/stores/useSentinelStore'
 import type { VideoSource } from '@/types'
+import { Modal } from './primitives'
 
 function SourceCard({
   source,
   selected,
   onSelect,
   onSettings,
+  onRemove,
 }: {
   source: VideoSource
   selected: boolean
   onSelect: () => void
   onSettings: () => void
+  onRemove: () => void
 }) {
   const live = useSentinelStore((s) => s.liveSources[source.uid])
   const motion = useSentinelStore((s) => s.motion[source.uid])
@@ -117,6 +120,18 @@ function SourceCard({
         >
           Settings
         </button>
+        <button
+          className="btn ghost sm"
+          style={{ marginLeft: 'auto', color: 'var(--danger)' }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+          title="Remove this source from surveillance"
+          aria-label={`Remove ${source.name}`}
+        >
+          Remove
+        </button>
       </div>
     </div>
   )
@@ -126,7 +141,27 @@ export function SourceList({ onSettings }: { onSettings: (source: VideoSource) =
   const sources = useSentinelStore((s) => s.sources)
   const selectedId = useSentinelStore((s) => s.selectedSourceId)
   const selectSource = useSentinelStore((s) => s.selectSource)
+  const refreshSources = useSentinelStore((s) => s.refreshSources)
+  const toast = useSentinelStore((s) => s.toast)
   const [filter, setFilter] = useState('')
+  const [removing, setRemoving] = useState<VideoSource | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const confirmRemove = async () => {
+    if (!removing) return
+    setBusy(true)
+    try {
+      await api.deleteSource(removing.id)
+      if (selectedId === removing.id) selectSource(null)
+      await refreshSources()
+      toast('ok', `Removed ${removing.name}`)
+      setRemoving(null)
+    } catch (e) {
+      toast('error', (e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()
@@ -170,9 +205,37 @@ export function SourceList({ onSettings }: { onSettings: (source: VideoSource) =
             selected={source.id === selectedId}
             onSelect={() => selectSource(source.id)}
             onSettings={() => onSettings(source)}
+            onRemove={() => setRemoving(source)}
           />
         ))}
       </div>
+
+      {removing && (
+        <Modal
+          title="Remove source"
+          onClose={() => setRemoving(null)}
+          footer={
+            <>
+              <button className="btn ghost" onClick={() => setRemoving(null)}>
+                Cancel
+              </button>
+              <button className="btn danger" onClick={confirmRemove} disabled={busy}>
+                {busy ? 'Removing…' : 'Remove source'}
+              </button>
+            </>
+          }
+        >
+          <p style={{ fontSize: 12.5, marginTop: 0 }}>
+            Remove <strong>{removing.name}</strong> from surveillance?
+          </p>
+          <p className="hint">
+            Its worker stops immediately and it disappears from the console.
+            Recordings, events and detections captured from it are removed with
+            it, and identities learned from it are kept. The video file itself
+            is left on disk.
+          </p>
+        </Modal>
+      )}
     </aside>
   )
 }

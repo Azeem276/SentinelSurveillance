@@ -142,6 +142,10 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .btn.success { background: var(--ok); border-color: var(--ok); color: #04210f; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.danger:hover:not(:disabled) { background: #dc2626; }
+/* Muting is a safety-relevant state, so the control stays visibly
+   abnormal while it is on - a silent alarm nobody realises is silent is
+   worse than no alarm at all. */
+.btn.muted-alarm { border-color: var(--warn-dim); color: var(--warn); }
 .btn.ghost { background: transparent; border-color: var(--border); color: var(--text-1); }
 .btn.ghost:hover:not(:disabled) { color: var(--text-0); background: var(--bg-2); }
 .btn.sm { padding: 3px 8px; font-size: 11px; }

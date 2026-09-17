@@ -21,8 +21,9 @@ export function SurveillanceHeader() {
   const pendingReview = useSentinelStore((s) => s.pendingReview)
   const refreshAll = useSentinelStore((s) => s.refreshAll)
   const toast = useSentinelStore((s) => s.toast)
+  const alarmSound = useSentinelStore((s) => s.alarmSound)
+  const setAlarmSound = useSentinelStore((s) => s.setAlarmSound)
   const [busy, setBusy] = useState<string | null>(null)
-  const [muted, setMuted] = useState(alertAudio.isMuted)
 
   const surveillanceOn = system?.surveillance_active ?? false
   const intelligenceOn = system?.intelligence_active ?? false
@@ -97,6 +98,13 @@ export function SurveillanceHeader() {
         {system && system.active_alerts > 0 && (
           <StatusChip label={`${system.active_alerts} ALERT`} state="danger" />
         )}
+        {!alarmSound && (
+          <StatusChip
+            label="SOUND MUTED"
+            state="warn"
+            title="Alarms are still raised, recorded and displayed — they are only silent"
+          />
+        )}
         <StatusChip
           label={(system?.device ?? 'cpu').toUpperCase()}
           state="off"
@@ -106,15 +114,21 @@ export function SurveillanceHeader() {
 
       <div className="header-group">
         <button
-          className="btn ghost sm"
+          className={`btn ghost sm ${alarmSound ? '' : 'muted-alarm'}`}
           onClick={() => {
-            const next = !muted
-            alertAudio.setMuted(next)
-            setMuted(next)
+            // Unlocking here too: if they mute and later unmute, the audio
+            // context is already primed by this very gesture.
+            alertAudio.unlock()
+            void setAlarmSound(!alarmSound)
           }}
-          title={muted ? 'Unmute alert audio' : 'Mute alert audio'}
+          title={
+            alarmSound
+              ? 'Mute alarm sound. Alarms keep firing and are still recorded and shown — they just go silent.'
+              : 'Alarm sound is muted. Alarms are still being raised and logged. Click to turn sound back on.'
+          }
+          aria-pressed={!alarmSound}
         >
-          {muted ? '🔇' : '🔊'}
+          {alarmSound ? '🔊 SOUND' : '🔇 MUTED'}
         </button>
 
         <button
