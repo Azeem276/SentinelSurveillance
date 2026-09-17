@@ -114,7 +114,7 @@ SECRET_KEY=<generated>
 CORS_ORIGINS=https://sentinel.your-domain.example
 
 API_HOST=127.0.0.1
-API_PORT=8000
+API_PORT=8600
 
 AI_DEVICE=auto
 AUTO_DOWNLOAD_MODELS=true
@@ -158,15 +158,15 @@ For an air-gapped server, copy `yolo11n.pt`,
 
 ```bash
 cd backend
-../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8600
 ```
 
 In another shell:
 
 ```bash
-curl -s localhost:8000/api/system/health     # {"status":"ok", "database":{"connected":true}}
-curl -s localhost:8000/api/system/state
-curl -s localhost:8000/api/system/models
+curl -s localhost:8600/api/system/health     # {"status":"ok", "database":{"connected":true}}
+curl -s localhost:8600/api/system/state
+curl -s localhost:8600/api/system/models
 ```
 
 If `status` is `degraded`, the database is unreachable — fix step 3/4 before
@@ -210,7 +210,7 @@ Group=sentinel
 WorkingDirectory=/opt/sentinel/backend
 Environment="PYTHONUNBUFFERED=1"
 ExecStart=/opt/sentinel/.venv/bin/python -m uvicorn app.main:app \
-          --host 127.0.0.1 --port 8000 --workers 1
+          --host 127.0.0.1 --port 8600 --workers 1
 Restart=always
 RestartSec=5
 
@@ -264,7 +264,7 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8600;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -277,7 +277,7 @@ server {
     }
 
     location /ws {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8600;
         proxy_http_version 1.1;
         proxy_set_header Upgrade    $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -363,7 +363,7 @@ being open. Historical events survive expiry.
 
 - [ ] **Put authentication in front of it.** There is no auth layer in the
       app. nginx basic auth, an SSO proxy, or a private network — pick one.
-- [ ] Never expose port 8000 publicly; bind the backend to `127.0.0.1`.
+- [ ] Never expose port 8600 publicly; bind the backend to `127.0.0.1`.
 - [ ] Set a real `SECRET_KEY` and a strong database password.
 - [ ] `chmod 600 .env`.
 - [ ] Set `CORS_ORIGINS` to your actual origin, not `*`.

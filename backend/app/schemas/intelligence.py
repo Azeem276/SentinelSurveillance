@@ -46,16 +46,19 @@ class IdentityRead(ORMModel):
     thumbnail_path: str | None
     source_id: int | None
     created_at: datetime
+    # Human-readable name, falling back to the timestamp identifier. Computed
+    # so no route can serialise an identity without it.
+    label: str = ""
 
-    @property
-    def label(self) -> str:
-        return self.display_name or self.generated_identifier
+    @model_validator(mode="after")
+    def _derive_label(self) -> "IdentityRead":
+        self.label = self.display_name or self.generated_identifier
+        return self
 
 
 class IdentityDetail(IdentityRead):
     embedding_count: int = 0
     track_count: int = 0
-    label: str = ""
     thumbnail_url: str | None = None
 
 

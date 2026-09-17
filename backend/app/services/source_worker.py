@@ -87,7 +87,7 @@ class SourceWorker(threading.Thread):
         self.source_id = source_id
         self.source_uid = source_uid
         self.source_name = source_name
-        self._stop = threading.Event()
+        self._stop_requested = threading.Event()
         self._intelligence_enabled = intelligence_enabled
         self._global_intelligence = global_intelligence
         self._recording_enabled = recording_enabled
@@ -110,11 +110,11 @@ class SourceWorker(threading.Thread):
 
     # ------------------------------------------------------------ control
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_requested.set()
 
     @property
     def stopping(self) -> bool:
-        return self._stop.is_set()
+        return self._stop_requested.is_set()
 
     def set_intelligence(self, enabled: bool) -> None:
         self._intelligence_enabled = enabled
@@ -364,7 +364,7 @@ class SourceWorker(threading.Thread):
         last_frame: Frame | None = None
 
         try:
-            while not self._stop.is_set():
+            while not self._stop_requested.is_set():
                 try:
                     frame = self.adapter.read()
                 except SourceUnavailableError as exc:

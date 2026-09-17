@@ -55,7 +55,17 @@ class VideoSource(Base, TimestampMixin):
     calibration: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    recordings = relationship("RecordingSession", back_populates="source", lazy="selectin")
+    # delete-orphan + passive_deletes hands the child rows to the database's
+    # ON DELETE CASCADE. Without it SQLAlchemy tries to nullify
+    # recording_sessions.source_id on delete, which is NOT NULL, and removing
+    # a source fails with an IntegrityError.
+    recordings = relationship(
+        "RecordingSession",
+        back_populates="source",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         CheckConstraint("proximity_a > proximity_b", name="proximity_a_gt_b"),

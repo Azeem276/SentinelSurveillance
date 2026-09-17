@@ -181,7 +181,7 @@ export function SourceList({ onSettings }: { onSettings: (source: VideoSource) =
         <span className="mono">{sources.length}</span>
       </div>
 
-      <div style={{ padding: '8px 8px 0' }}>
+      <div className="sidebar-filter">
         <input
           className="input"
           placeholder="Filter sources…"

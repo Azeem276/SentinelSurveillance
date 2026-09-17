@@ -14,6 +14,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -159,12 +160,23 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_request: Request, exc: RequestValidationError):
+        # Model validators surface the raw ValueError under ``ctx``; it is not
+        # JSON-serialisable, so stringify it rather than turn a 422 into a 500.
+        errors = []
+        for error in exc.errors():
+            error = dict(error)
+            if isinstance(error.get("ctx"), dict):
+                error["ctx"] = {
+                    key: str(value) if isinstance(value, Exception) else value
+                    for key, value in error["ctx"].items()
+                }
+            errors.append(error)
         return JSONResponse(
             status_code=422,
             content={
                 "code": "validation_error",
                 "message": "Request validation failed",
-                "details": {"errors": exc.errors()},
+                "details": {"errors": jsonable_encoder(errors)},
             },
         )
 

@@ -10,8 +10,31 @@
 //   permanent familiar  -> silent
 //   temporary familiar  -> one short beep
 //   unfamiliar in B     -> continuous alarm until the operator stops it
+//
+// Audio starts MUTED on a fresh browser. Alarm state (banner, badges, STOP
+// ALARM) is unaffected by mute; only the tone is. The operator's choice is
+// remembered per browser.
 
 type AlarmListener = (active: boolean) => void
+
+export const MUTE_STORAGE_KEY = 'sentinel.alertAudio.muted'
+
+function readStoredMute(): boolean {
+  try {
+    const stored = window.localStorage.getItem(MUTE_STORAGE_KEY)
+    return stored === null ? true : stored === 'true'
+  } catch {
+    return true
+  }
+}
+
+function writeStoredMute(muted: boolean): void {
+  try {
+    window.localStorage.setItem(MUTE_STORAGE_KEY, String(muted))
+  } catch {
+    /* storage unavailable: stay muted for this session only */
+  }
+}
 
 class AlertAudioService {
   private ctx: AudioContext | null = null
@@ -20,7 +43,7 @@ class AlertAudioService {
   private alarmTimer: number | null = null
   private activeAlarmIds = new Set<number>()
   private listeners = new Set<AlarmListener>()
-  private muted = false
+  private muted = readStoredMute()
   private unlocked = false
 
   /** Browsers block audio until a user gesture; call this from a click. */
@@ -36,6 +59,7 @@ class AlertAudioService {
 
   setMuted(muted: boolean): void {
     this.muted = muted
+    writeStoredMute(muted)
     if (muted) this.stopTone()
     else if (this.activeAlarmIds.size > 0) this.startTone()
   }

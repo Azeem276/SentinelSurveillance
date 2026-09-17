@@ -28,7 +28,7 @@ export default function App() {
   return (
     <div className="app">
       <SurveillanceHeader />
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div className="app-main">
         <AlertBanner />
         <ReviewBanner />
         {lastError && (
@@ -37,7 +37,7 @@ export default function App() {
             <span>{lastError}</span>
           </div>
         )}
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div className="app-route">
           <Routes>
             <Route path="/" element={<MonitorPage />} />
             <Route path="/review" element={<ReviewPage />} />

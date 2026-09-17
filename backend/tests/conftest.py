@@ -39,6 +39,11 @@ def _test_environment(tmp_path_factory: pytest.TempPathFactory):
             "AI_DEVICE": "cpu",
             "LOG_LEVEL": "WARNING",
             "RECORDING_MAX_MINUTES": "30",
+            # Behavioural tunables are pinned to the code defaults so the
+            # suite is deterministic no matter what an operator has set in
+            # the deployment .env, which config.py also reads.
+            "UNKNOWN_CONFIRM_SECONDS": "12",
+            "UNKNOWN_CONFIRM_MIN_VERDICTS": "3",
         }
     )
 
@@ -187,3 +192,48 @@ def models_available() -> bool:
 @pytest.fixture()
 def past() -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=1)
+
+
+# --------------------------------------------------------------- HTTP client
+@pytest.fixture()
+def api_client(engine):
+    """FastAPI TestClient against the SQLite test engine.
+
+    Route handlers open their own sessions via ``get_db`` and commit, so this
+    fixture does not share the rolled-back ``session`` fixture; instead every
+    table is emptied after the test and the process-wide surveillance manager
+    is reset so no worker thread survives into the next test.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models import Base
+    from app.services.surveillance import reset_manager
+
+    def _wipe() -> None:
+        with engine.begin() as conn:
+            for table in reversed(Base.metadata.sorted_tables):
+                conn.execute(table.delete())
+
+    _wipe()
+    reset_manager()
+    # No ``with``: the lifespan (scheduler, hydrate, recovery) is not what is
+    # under test here and would start background jobs.
+    client = TestClient(app)
+    try:
+        yield client
+    finally:
+        reset_manager()
+        _wipe()
+
+
+@pytest.fixture()
+def committed_session(engine):
+    """A session whose writes are committed and visible to API requests."""
+    from sqlalchemy.orm import sessionmaker
+
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        yield db
+    finally:
+        db.close()

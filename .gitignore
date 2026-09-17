@@ -17,6 +17,7 @@ htmlcov/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/tsconfig.tsbuildinfo
 
 # Local data & media (never commit footage or biometric data).
 # Anchored with a leading slash: a bare 'storage/' also matched

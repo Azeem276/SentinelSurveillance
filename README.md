@@ -302,7 +302,7 @@ Two terminals.
 
 ```bash
 cd backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8600 --reload
 ```
 
 **Frontend:**
@@ -315,9 +315,9 @@ npm run dev
 | | URL |
 |---|---|
 | **Dashboard** | **http://localhost:5173** |
-| API docs (Swagger) | http://localhost:8000/api/docs |
-| Health check | http://localhost:8000/api/system/health |
-| WebSocket | ws://localhost:8000/ws |
+| API docs (Swagger) | http://localhost:8600/api/docs |
+| Health check | http://localhost:8600/api/system/health |
+| WebSocket | ws://localhost:8600/ws |
 
 The Vite dev server proxies `/api` and `/ws` to the backend, so the browser
 sees a single origin.
@@ -372,7 +372,7 @@ data/familiar_faces/
 Use several photos per person, varying angle and lighting. Then:
 
 ```bash
-curl -X POST http://localhost:8000/api/identities/enrol-dataset
+curl -X POST http://localhost:8600/api/identities/enrol-dataset
 ```
 
 or press **Enrol dataset folder** on the Identities page. The directory name
@@ -457,7 +457,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 Confirm what is in use:
 
 ```bash
-curl http://localhost:8000/api/system/diagnostics | python -m json.tool
+curl http://localhost:8600/api/system/diagnostics | python -m json.tool
 ```
 
 The **Diagnostics** page reports the active device, per-source FPS,
@@ -655,7 +655,7 @@ on a trusted network. See DEPLOYMENT.md.
 
 **`Cannot reach the Sentinel backend`**
 Backend is not running or is on another port. Check
-`curl http://localhost:8000/api/system/health`.
+`curl http://localhost:8600/api/system/health`.
 
 **Backend starts but logs `database_unavailable`**
 `DATABASE_URL` is wrong or the schema has not been applied. The API still
@@ -712,7 +712,7 @@ buffering so a live source cannot build a backlog, and reconnection with
 exponential backoff. To use a camera:
 
 ```bash
-curl -X POST http://localhost:8000/api/sources \
+curl -X POST http://localhost:8600/api/sources \
   -H 'Content-Type: application/json' \
   -d '{"uid":"front_door","name":"Front Door","type":"RTSP",
        "uri":"rtsp://user:pass@192.168.1.50:554/stream1",

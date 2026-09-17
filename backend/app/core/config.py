@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "production", "test"] = "development"
     debug: bool = False
     api_host: str = "127.0.0.1"
-    api_port: int = 8000
+    api_port: int = 8600
     log_level: str = "INFO"
     log_json: bool = False
 

@@ -32,7 +32,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     })
   } catch (cause) {
     throw new ApiError(
-      'Cannot reach the Sentinel backend. Is it running on port 8000?',
+      'Cannot reach the Sentinel backend. Is it running?',
       0,
       'network_error',
     )

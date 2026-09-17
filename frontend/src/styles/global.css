@@ -35,11 +35,19 @@
   --header-h: 56px;
   --sidebar-w: 264px;
   --panel-w: 380px;
+  /* Smallest work area that stays usable; below this the whole page scrolls. */
+  --workspace-min-h: 520px;
 }
 
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; margin: 0; }
+
+/* #root is the one scroll for the whole screen. The shell below sizes itself
+   to the viewport, so this only engages when the layout hits its minimum and
+   genuinely needs more room than the window offers -- at which point nothing
+   is left stranded off-screen. */
+#root { overflow: auto; }
 
 body {
   background: var(--bg-0);
@@ -62,13 +70,35 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 /* ------------------------------------------------------------- layout */
 .app {
   display: grid;
-  grid-template-rows: var(--header-h) 1fr;
-  height: 100vh;
+  /* minmax() floor: the work area never collapses below a usable height. When
+     the viewport cannot provide it the shell grows and #root scrolls. */
+  grid-template-rows: var(--header-h) minmax(var(--workspace-min-h), 1fr);
+  min-height: 100%;
 }
+
+/* Row 2 of the shell: banners stack on top, the routed view takes the rest. */
+.app-main {
+  display: flex; flex-direction: column;
+  min-height: 0; overflow: hidden;
+}
+.app-main > .alert-banner { flex: none; }
+
+/* The routed view. Making this a flex container with a definite height is what
+   gives .workspace and .page something real to be 100% OF -- every panel's
+   own scrollbar depends on this height chain staying unbroken. */
+.app-route {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.app-route > * { flex: 1 1 auto; min-height: 0; }
 
 .workspace {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
+  /* height:100% is what makes the three panels scroll independently: without a
+     definite height here every panel sizes to its own content, the workspace
+     grows past the viewport and the overflow is unreachable. */
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -154,14 +184,16 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 /* ------------------------------------------------------------ sidebar */
 .sidebar {
   background: var(--bg-1); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; min-height: 0;
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
 .sidebar-header {
+  flex: none;
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 12px; border-bottom: 1px solid var(--border);
   font-size: 11px; font-weight: 700; letter-spacing: .8px; color: var(--text-2);
 }
-.source-list { overflow-y: auto; flex: 1; padding: 6px; }
+.sidebar-filter { flex: none; padding: 8px 8px 0; }
+.source-list { overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 6px; }
 
 .source-card {
   border: 1px solid var(--border); border-left: 3px solid var(--border);
@@ -193,14 +225,15 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 /* -------------------------------------------------------- monitor area */
 .monitor {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
-  background: var(--bg-0);
+  overflow: hidden; background: var(--bg-0);
 }
 .monitor-toolbar {
-  display: flex; align-items: center; gap: 10px;
+  flex: none;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg-1);
 }
 .monitor-title { font-weight: 700; font-size: 14px; }
-.monitor-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
+.monitor-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px; }
 
 .video-frame {
   position: relative; background: #000;
@@ -233,11 +266,12 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
 .panel-header {
+  flex: none;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
 }
 .panel-title { font-weight: 700; font-size: 13px; }
-.panel-body { overflow-y: auto; flex: 1; padding: 12px 14px; }
+.panel-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 12px 14px; }
 
 .panel-section { margin-bottom: 18px; }
 .panel-section h4 {
@@ -356,7 +390,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
   padding: 13px 16px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between; font-weight: 700;
 }
-.modal-body { padding: 16px; overflow-y: auto; }
+.modal-body { padding: 16px; overflow-y: auto; min-height: 0; }
 .modal-footer {
   padding: 12px 16px; border-top: 1px solid var(--border);
   display: flex; justify-content: flex-end; gap: 8px;
@@ -375,7 +409,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .toast.error { border-left-color: var(--danger); }
 
 /* -------------------------------------------------------------- misc */
-.page { padding: 18px 22px; overflow-y: auto; height: 100%; }
+.page { padding: 18px 22px; overflow-y: auto; height: 100%; min-height: 0; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .page-title { font-size: 18px; font-weight: 700; margin: 0; }
 .page-sub { color: var(--text-2); font-size: 12px; margin-top: 2px; }

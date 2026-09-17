@@ -1,6 +1,8 @@
 """Identity management, unfamiliar-face review and classification."""
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import DbSession, PaginationDep
@@ -28,7 +30,6 @@ def _detail(session, identity) -> IdentityDetail:
     detail = IdentityDetail.model_validate(identity)
     detail.embedding_count = FaceEmbeddingRepository(session).count_for_identity(identity.id)
     detail.track_count = len(TrackRepository(session).list_for_identity(identity.id, limit=500))
-    detail.label = identity.display_name or identity.generated_identifier
     detail.thumbnail_url = (
         f"/api/faces/image/{identity.thumbnail_path}" if identity.thumbnail_path else None
     )
@@ -198,7 +199,7 @@ def classify_face(face_id: int, payload: FaceClassifyRequest, session: DbSession
         identity_id=payload.identity_id,
     )
     session.commit()
-    return ClassificationResponse(**result.__dict__)
+    return ClassificationResponse(**asdict(result))
 
 
 @router.post("/faces/classify-bulk", response_model=list[ClassificationResponse])
@@ -211,7 +212,7 @@ def bulk_classify(payload: BulkClassifyRequest, session: DbSession):
         merge_into_one_identity=payload.merge_into_one_identity,
     )
     session.commit()
-    return [ClassificationResponse(**r.__dict__) for r in results]
+    return [ClassificationResponse(**asdict(r)) for r in results]
 
 
 @router.post("/faces/{face_id}/merge", response_model=ClassificationResponse)
